@@ -31,6 +31,7 @@ import argparse
 import asyncio
 import json
 import time
+from pathlib import Path
 
 try:  # readline transparently upgrades input(): arrow keys, ctrl-a/e/k/w,
     import readline  # noqa: F401  # and up-arrow recall within this session
@@ -45,11 +46,13 @@ from agent import db
 from agent.agent import build_agent, prompt_version, render_system_prompt
 from agent.auth import AuthContext
 from agent.config import REPO_ROOT
+from agent.conversation_logger import append_terminal_record
 from observability.instrument import load_env, setup_openai_tracing, setup_tracing
 
 DEFAULT_USERS = {"shopper": 1, "merchant": 9001, "support": 9501}
 MAX_TURNS = 12  # cap runaway loops; keeps conversations bounded
 SESSIONS_DB = REPO_ROOT / ".sessions.db"
+CONVERSATION_LOG_PATH = REPO_ROOT / "logs" / "terminal-conversations.jsonl"
 _tracer = trace.get_tracer("cartwheel.cli")
 
 
@@ -96,6 +99,29 @@ def resolve_auth(role: str, user_id: int | None) -> AuthContext:
     return AuthContext(user_id=user.id, role=user.role, store_id=user.store_id)
 
 
+def _ask_is_failure() -> bool | None:
+    """Ask for the user's assessment without trying to infer a cause."""
+    while True:
+        try:
+            answer = input("Mark this response as a failure? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if answer in {"", "n", "no"}:
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        print("Please enter 'y' or 'n'.")
+
+
+def _write_conversation_log(path: Path, **record: object) -> None:
+    """Keep a logging problem from terminating an otherwise usable chat."""
+    try:
+        append_terminal_record(path, **record)
+    except OSError as exc:
+        print(f"Warning: could not write terminal conversation log: {exc}")
+
+
 async def chat(
     ctx: AuthContext,
     model: str | None,
@@ -106,10 +132,10 @@ async def chat(
     agent = build_agent(ctx, model=model, defenses=defenses)
     # main() enables callbacks for Langfuse or explicit OpenAI tracing.
     run_config = RunConfig(tracing_disabled=not tracing)
-    session = SQLiteSession(
-        f"cli-{ctx.role}-{ctx.user_id}-{int(time.time())}", str(SESSIONS_DB)
-    )
+    session_id = f"cli-{ctx.role}-{ctx.user_id}-{int(time.time())}"
+    session = SQLiteSession(session_id, str(SESSIONS_DB))
     version = prompt_version(render_system_prompt(ctx))
+    turn_number = 0
     print(
         f"Cartwheel support CLI | role={ctx.role} user={ctx.user_id} "
         f"store={ctx.store_id} prompt_version={version} defenses={'on' if defenses else 'off'}"
@@ -125,19 +151,39 @@ async def chat(
             continue
         if line.lower() in {"quit", "exit"}:
             return
-        with _tracer.start_as_current_span("cartwheel.session_message") as span:
-            if span.is_recording():
-                span.set_attribute("cartwheel.user_role", ctx.role)
-                span.set_attribute("cartwheel.user_id", str(ctx.user_id))
-                span.set_attribute("cartwheel.prompt_version", version)
-            result = await Runner.run(
-                agent,
-                line,
-                session=session,
-                context=ctx,
-                max_turns=MAX_TURNS,
-                run_config=run_config,
+        turn_number += 1
+        try:
+            with _tracer.start_as_current_span("cartwheel.session_message") as span:
+                if span.is_recording():
+                    span.set_attribute("cartwheel.user_role", ctx.role)
+                    span.set_attribute("cartwheel.user_id", str(ctx.user_id))
+                    span.set_attribute("cartwheel.prompt_version", version)
+                result = await Runner.run(
+                    agent,
+                    line,
+                    session=session,
+                    context=ctx,
+                    max_turns=MAX_TURNS,
+                    run_config=run_config,
+                )
+        except Exception as exc:
+            # An attempted request still belongs in the independent terminal
+            # log even when the model or one of its tools fails before replying.
+            _write_conversation_log(
+                CONVERSATION_LOG_PATH,
+                session_id=session_id,
+                turn_number=turn_number,
+                role=ctx.role,
+                user_id=ctx.user_id,
+                store_id=ctx.store_id,
+                request=line,
+                response=None,
+                new_items=[],
+                is_failure=True,
+                error=f"{type(exc).__name__}: {exc}",
             )
+            print(f"\nagent error> {exc}\n")
+            continue
 
         # ------------------------------------------------------------------
         # Module 4 pause and resume code (Homework 8, Part D). With defenses on,
@@ -177,6 +223,22 @@ async def chat(
         if debug:
             _print_tool_calls(result.new_items)
         print(f"\nagent> {result.final_output}\n")
+        is_failure = _ask_is_failure()
+        if is_failure:
+            # The independent file is a failure register, so successful and
+            # unassessed turns should leave no record in it.
+            _write_conversation_log(
+                CONVERSATION_LOG_PATH,
+                session_id=session_id,
+                turn_number=turn_number,
+                role=ctx.role,
+                user_id=ctx.user_id,
+                store_id=ctx.store_id,
+                request=line,
+                response=result.final_output,
+                new_items=result.new_items,
+                is_failure=True,
+            )
 
 
 def main() -> None:

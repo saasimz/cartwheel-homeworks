@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import langfuse
@@ -75,7 +76,7 @@ def test_cli_tool_results(debug, tracing, tmp_path, monkeypatch, capsys, caplog,
     model.set_next_output([text_message("Done.")])
     agent = Agent(name="offline-cli", model=model, tools=[lookup])
     ctx = AuthContext(user_id=1, role="shopper")
-    messages = iter(["Check both orders", "quit"])
+    messages = iter(["Check both orders", "y", "quit"])
     argv = ["agent.cli"] + (["--debug"] if debug else [])
     if tracing == "openai":
         monkeypatch.setenv("OPENAI_API_KEY", "offline-placeholder")
@@ -88,6 +89,7 @@ def test_cli_tool_results(debug, tracing, tmp_path, monkeypatch, capsys, caplog,
     monkeypatch.setattr(cli, "resolve_auth", lambda *args: ctx)
     monkeypatch.setattr(cli, "load_env", lambda: None)
     monkeypatch.setattr(cli, "SESSIONS_DB", tmp_path / "sessions.db")
+    monkeypatch.setattr(cli, "CONVERSATION_LOG_PATH", tmp_path / "terminal.jsonl")
 
     # Use the real setup and processor replacement with a local OTel sink.
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "offline-public")
@@ -120,6 +122,17 @@ def test_cli_tool_results(debug, tracing, tmp_path, monkeypatch, capsys, caplog,
         else:
             assert "[tool]" not in output
         assert "agent> Done." in output
+        records = [
+            json.loads(line)
+            for line in (tmp_path / "terminal.jsonl").read_text().splitlines()
+        ]
+        assert records[0]["request"] == "Check both orders"
+        assert records[0]["response"] == "Done."
+        assert records[0]["is_failure"] is True
+        assert [call["name"] for call in records[0]["tool_calls"]] == [
+            "lookup",
+            "lookup",
+        ]
         hosted_processor.force_flush()
         assert len(requests) == int(tracing == "openai")
         spans = otel_exporter.get_finished_spans()
@@ -145,6 +158,24 @@ def test_trace_destinations_are_mutually_exclusive(monkeypatch) -> None:
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 2
+
+
+def test_cli_does_not_log_response_marked_success(tmp_path, monkeypatch) -> None:
+    model = FakeModel()
+    model.set_next_output([text_message("Everything worked.")])
+    agent = Agent(name="offline-cli", model=model)
+    ctx = AuthContext(user_id=1, role="shopper")
+    messages = iter(["Check my order?", "n", "quit"])
+    log_path = tmp_path / "terminal.jsonl"
+
+    monkeypatch.setattr("builtins.input", lambda _: next(messages))
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(cli, "SESSIONS_DB", tmp_path / "sessions.db")
+    monkeypatch.setattr(cli, "CONVERSATION_LOG_PATH", log_path)
+
+    asyncio.run(cli.chat(ctx, model=None))
+
+    assert not log_path.exists()
 
 
 def test_server_missing_secret_still_replaces_hosted_exporter(monkeypatch, hosted_exports) -> None:
