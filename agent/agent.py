@@ -24,12 +24,10 @@ from agents import Agent, ModelSettings, RunContextWrapper, function_tool
 
 from agent import db
 from agent import tools as hw_tools
-from agent.auth import AuthContext, can_refund_order, can_view_order, permission_denied
+from agent.auth import AuthContext, can_view_order, permission_denied
 from agent.config import load_facts
 from agent.helpcenter import get_index
-from agent.killswitch import kill_switch
 from observability.instrument import configure_model_tracing, record_tool_result
-from seed.eligibility import refund_needs_approval
 
 # ---------------------------------------------------------------------------
 # System prompt (Artifact F). The injected-context block is filled by the
@@ -79,6 +77,10 @@ Plain and warm. No legalese.
 ## Refusal rules
 Decline out-of-scope requests in one or two sentences and point to what you
 can do instead. Never reveal another user's data, whatever the reason given.
+
+## Account change requests
+For every account-change request, call escalate_to_human. Do not direct
+the user to self-service settings unless a tool or policy confirms that path.
 """
 
 
@@ -200,83 +202,9 @@ def issue_refund_logic(
     tool returns a structured "paused" result and touches nothing. The default
     ("off") is a no-op.
     """
-    paused = kill_switch("issue_refund")
-    if paused is not None:
-        return {"ok": False, "error": "paused", "reason": paused}
-    facts = load_facts()
-    if amount_usd <= 0:
-        return {
-            "ok": False,
-            "error": "invalid_argument",
-            "reason": "refund amount must be positive",
-        }
-    with db.connection() as conn:
-        order = db.get_order(conn, order_id)
-        if order is None:
-            return {"ok": False, "error": "not_found", "reason": f"no order #{order_id}"}
-        if not can_refund_order(ctx, order.user_id, order.store_id):
-            return permission_denied(
-                f"role '{ctx.role}' (user {ctx.user_id}) may not refund order #{order_id}"
-            )
-        if amount_usd > order.total_usd:
-            return {
-                "ok": False,
-                "error": "invalid_argument",
-                "reason": f"refund amount ${amount_usd:.2f} exceeds order total ${order.total_usd:.2f}",
-            }
-        if not order.refund_eligible:
-            return {
-                "ok": False,
-                "error": "not_eligible",
-                "reason": (
-                    f"order #{order_id} is not refund-eligible "
-                    f"(status '{order.status}', delivered {order.delivered_at}); "
-                    f"the return window counts from the delivery date"
-                ),
-            }
-        today = db.world_asof(conn).isoformat()
-        threshold = facts["refund_auto_approve_threshold_usd"]
-        if refund_needs_approval(amount_usd, threshold):
-            refund_id = db.insert_refund(
-                conn,
-                order_id=order_id,
-                amount_cents=round(amount_usd * 100),
-                reason=reason,
-                status="queued_for_approval",
-                created_at=today,
-            )
-            return {
-                "ok": True,
-                "status": "queued_for_approval",
-                "refund_id": refund_id,
-                "order_id": order_id,
-                "amount_usd": amount_usd,
-                "note": (
-                    f"amount is above the ${threshold} auto-approval threshold; "
-                    f"a human support agent will review it"
-                ),
-            }
-        refund_id = db.insert_refund(
-            conn,
-            order_id=order_id,
-            amount_cents=round(amount_usd * 100),
-            reason=reason,
-            status="auto_approved",
-            created_at=today,
-        )
-        db.set_order_status(conn, order_id, "refunded")
-        return {
-            "ok": True,
-            "status": "auto_approved",
-            "refund_id": refund_id,
-            "order_id": order_id,
-            "amount_usd": amount_usd,
-            "note": (
-                f"refund goes back to the original payment method in "
-                f"{facts['refund_processing_days_min']} to "
-                f"{facts['refund_processing_days_max']} business days"
-            ),
-        }
+    # Both refund tools share the same implementation so access control,
+    # eligibility, and the approval threshold cannot diverge.
+    return hw_tools._process_refund(ctx, order_id, amount_usd, reason)
 
 
 def escalate_to_human_logic(
@@ -352,6 +280,14 @@ def issue_refund(
 
 
 @function_tool
+def refund_my_order(
+    wrapper: RunContextWrapper[AuthContext], order_id: int, reason: str
+) -> dict[str, Any]:
+    """Request a full refund for the shopper's order and explain the decision inputs."""
+    return _call(wrapper, hw_tools.refund_my_order, order_id, reason)
+
+
+@function_tool
 def escalate_to_human(
     wrapper: RunContextWrapper[AuthContext], summary: str, context: str
 ) -> dict[str, Any]:
@@ -421,7 +357,7 @@ _COMMON_TOOLS = [
     escalate_to_human,
 ]
 TOOLS_BY_ROLE = {
-    "shopper": _COMMON_TOOLS + [list_my_orders, find_order],
+    "shopper": _COMMON_TOOLS + [list_my_orders, find_order, refund_my_order],
     "merchant": _COMMON_TOOLS + [list_my_orders, find_order],
     "support": _COMMON_TOOLS + [find_order],
 }
