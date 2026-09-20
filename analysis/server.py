@@ -24,6 +24,9 @@ API (kept compatible with the error-discovery skill so the same UI works):
     POST /api/patterns        push the updated taxonomy
     GET  /api/suggestions     agent depth-scan suggestions awaiting accept/reject
     POST /api/suggestions     push suggestions
+    GET  /api/runs            timestamped scenario-run summaries
+    GET  /api/sync-status     live Langfuse mirror status
+    POST /api/sync            request an immediate Langfuse refresh
 
 Run it:
 
@@ -42,6 +45,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,7 +54,9 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
-STATE_DIR = HERE / "state"
+# A separate state root lets a real review session coexist with the committed
+# demonstration fixtures.  The helpers use the same environment variable.
+STATE_DIR = Path(os.environ.get("CARTWHEEL_ANALYSIS_STATE", HERE / "state"))
 UI_DIR = HERE / "ui"
 
 # API path -> the state file that backs it. GET reads the file, POST overwrites
@@ -61,6 +68,9 @@ API_FILES: dict[str, Path] = {
     "/api/graph": STATE_DIR / "graph.json",
     "/api/patterns": STATE_DIR / "patterns.json",
     "/api/suggestions": STATE_DIR / "suggestions.json",
+    "/api/context": STATE_DIR / "scenario_context.json",
+    "/api/runs": STATE_DIR / "runs.json",
+    "/api/sync-status": STATE_DIR / "sync_status.json",
 }
 
 # Default empty document per endpoint, so a fresh checkout serves valid JSON
@@ -72,7 +82,16 @@ API_DEFAULTS: dict[str, Any] = {
     "/api/graph": {"nodes": [], "clusters": []},
     "/api/patterns": {},
     "/api/suggestions": [],
+    "/api/context": {"scenarios": {}, "traces": {}},
+    "/api/runs": [],
+    "/api/sync-status": {
+        "enabled": False,
+        "in_progress": False,
+        "message": "Langfuse synchronization is not configured",
+    },
 }
+
+SYNC_MANAGER: Any | None = None
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -169,6 +188,17 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
+        if path == "/api/sync":
+            if SYNC_MANAGER is None:
+                self._send_json(
+                    {"error": "Langfuse synchronization is not configured"}, status=503
+                )
+                return
+            started = SYNC_MANAGER.request()
+            self._send_json(
+                {"ok": True, "started": started}, status=202 if started else 200
+            )
+            return
         if path not in API_FILES:
             self._send_json({"error": f"cannot POST to {path}"}, status=404)
             return
@@ -177,13 +207,16 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "expected a JSON body"}, status=400)
             return
         synced = 0
+        new_labels: list[dict[str, Any]] = []
         if path == "/api/annotations":
+            new_labels = _new_structured_labels(data)
             try:
-                synced = _sync_annotation_scores(data)
+                synced = _sync_annotation_scores(new_labels)
             except Exception as exc:  # pragma: no cover - network-only path
                 # Preserve a resumable local copy, but tell the client that
                 # the canonical write did not complete.
                 _write_json(API_FILES[path], data)
+                _persist_label_history(new_labels)
                 self._send_json(
                     {
                         "error": f"Langfuse score write failed: {exc}",
@@ -193,6 +226,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 )
                 return
         _write_json(API_FILES[path], data)
+        if new_labels:
+            _persist_label_history(new_labels)
         result = {"ok": True, "count": _count(data)}
         if synced:
             result["langfuse_scores_written"] = synced
@@ -212,6 +247,65 @@ def _annotation_list(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, dict):
         data = data.get("annotations", [])
     return [a for a in data if isinstance(a, dict)] if isinstance(data, list) else []
+
+
+def _new_structured_labels(data: Any) -> list[dict[str, Any]]:
+    """Return structured decisions not already present in the local mirror.
+
+    The browser posts the complete annotation array on every save. Comparing
+    stable annotation ids prevents an unrelated free-text note from sending
+    every historical score to Langfuse again.
+    """
+    current = _annotation_list(
+        _read_json(API_FILES["/api/annotations"], API_DEFAULTS["/api/annotations"])
+    )
+    existing_ids = {str(item.get("id")) for item in current if item.get("id")}
+    out = []
+    for annotation in _annotation_list(data):
+        if str(annotation.get("id")) in existing_ids:
+            continue
+        if annotation.get("mode") and annotation.get("label") in (0, 1, "0", "1"):
+            out.append(annotation)
+    return out
+
+
+def _persist_label_history(labels: list[dict[str, Any]]) -> None:
+    """Append structured decisions to one inspectable JSONL file per mode.
+
+    When a reviewer changes a decision, the previous live row is retained and
+    marked with ``superseded_by``. This preserves the human edit history while
+    making the newest decision unambiguous to downstream helpers.
+    """
+    labels_dir = STATE_DIR / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    for annotation in labels:
+        mode = str(annotation["mode"])
+        safe_mode = re.sub(r"[^a-zA-Z0-9_-]+", "_", mode).strip("_") or "mode"
+        path = labels_dir / f"{safe_mode}.jsonl"
+        rows: list[dict[str, Any]] = []
+        if path.exists():
+            for raw in path.read_text().splitlines():
+                if raw.strip():
+                    rows.append(json.loads(raw))
+        record_id = str(annotation.get("id") or f"label-{time.time_ns()}")
+        trace_id = str(annotation["trace_id"])
+        for row in reversed(rows):
+            if row.get("trace_id") == trace_id and not row.get("superseded_by"):
+                row["superseded_by"] = record_id
+                break
+        rows.append(
+            {
+                "id": record_id,
+                "trace_id": trace_id,
+                "label": int(annotation["label"]),
+                "source": annotation.get("source", "human_structured_label"),
+                "note": annotation.get("note"),
+                "ts": annotation.get("ts"),
+            }
+        )
+        tmp = path.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        tmp.replace(path)
 
 
 def _sync_annotation_scores(data: Any) -> int:
@@ -333,9 +427,54 @@ def main() -> None:
         default=4.0,
         help="seconds between replayed annotations (default 4)",
     )
+    parser.add_argument(
+        "--sync-interval",
+        type=float,
+        default=float(os.environ.get("CARTWHEEL_TRACE_SYNC_INTERVAL", "60")),
+        help="seconds between Langfuse refreshes (default 60)",
+    )
+    parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="serve only the existing cache even when Langfuse is configured",
+    )
     args = parser.parse_args()
 
+    # The review server is launched independently from the Cartwheel API, so
+    # load the same repository .env before attempting Langfuse score writes.
+    # Missing Langfuse values still leave the local/offline workflow usable.
+    try:
+        from observability.instrument import load_env
+
+        load_env()
+    except Exception:
+        pass
+
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    global SYNC_MANAGER
+    if not args.no_sync:
+        try:
+            from analysis.helpers import langfuse_io
+
+            if langfuse_io.is_configured():
+                from analysis.live_sync import TraceSync
+
+                SYNC_MANAGER = TraceSync(interval=args.sync_interval)
+                _write_json(
+                    API_FILES["/api/sync-status"],
+                    {
+                        "enabled": True,
+                        "in_progress": False,
+                        "message": "waiting for initial Langfuse synchronization",
+                    },
+                )
+                SYNC_MANAGER.start()
+        except Exception as exc:
+            _write_json(
+                API_FILES["/api/sync-status"],
+                {"enabled": False, "in_progress": False, "error": str(exc)},
+            )
 
     if args.replay:
         replay_path = Path(args.replay)
@@ -358,6 +497,9 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nshutting down")
         server.shutdown()
+    finally:
+        if SYNC_MANAGER is not None:
+            SYNC_MANAGER.stop()
 
 
 if __name__ == "__main__":

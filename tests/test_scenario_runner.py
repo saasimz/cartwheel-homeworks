@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scenarios.runner import load_results, plan_run
+from scenarios.runner import load_results, plan_run, resolve_run_id
 
 
 def _scenario(sid: str) -> dict:
@@ -53,3 +53,16 @@ def test_load_results_reads_records_by_id(tmp_path: Path) -> None:
     path.write_text(json.dumps(_record("support-0001")) + "\n")
     assert list(load_results(path)) == ["support-0001"]
     assert load_results(tmp_path / "absent.jsonl") == {}
+
+
+def test_resume_reuses_the_existing_run_id() -> None:
+    existing = {
+        "support-0001": {**_record("support-0001"), "run_id": "run-fixed"},
+        "support-0002": {**_record("support-0002"), "run_id": "run-fixed"},
+    }
+    assert resolve_run_id(None, existing) == "run-fixed"
+    assert resolve_run_id("run-override", existing) == "run-override"
+
+
+def test_new_run_id_is_readable_and_nonempty() -> None:
+    assert resolve_run_id(None, {}).startswith("run-")

@@ -257,6 +257,12 @@ def select_traces(
                 "text": trace["text"],
                 "features": trace["features"],
                 "meta": trace["meta"],
+                "timestamp": trace.get("timestamp"),
+                "models": trace.get("models", []),
+                "observations": trace.get("observations", []),
+                "input": trace.get("input"),
+                "output": trace.get("output"),
+                "metadata": trace.get("metadata", {}),
                 "permalink": trace.get("permalink"),
                 "flags": [],
             }

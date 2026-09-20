@@ -111,6 +111,9 @@ class MessageIn(BaseModel):
     # Set by the scenario runner (Lecture 3) so a trace links back to its
     # ground truth. Manual sessions leave it null.
     scenario_id: str | None = None
+    # One stable identifier for the scenario runner execution. Keeping this
+    # separate from scenario_id lets Trace Lab distinguish repeated batches.
+    run_id: str | None = None
 
 
 @app.post("/sessions")
@@ -202,6 +205,8 @@ async def post_message(
         span.set_attribute("cartwheel.prompt_version", version)
         if body.scenario_id and body.scenario_id.strip():
             span.set_attribute("cartwheel.scenario_id", body.scenario_id.strip())
+        if body.run_id and body.run_id.strip():
+            span.set_attribute("cartwheel.run_id", body.run_id.strip())
 
         if capture_content:
             input_messages = [

@@ -1,14 +1,15 @@
 <!DOCTYPE html>
 <!--
-  Error-analysis review interface (reference UI for the Cartwheel course).
+  Cartwheel Trace Lab: customized error-analysis review interface.
 
   Adapted from the instructor's error-discovery skill. A single self-contained
   file, served by analysis/server.py, that renders Cartwheel agent traces for
-  reading and annotation. Three views:
+  reading and annotation. Four views:
 
     trace     read one trace, annotate the first failure in place
     map       a 2D projection of the whole store, clusters + sampled + annotated
     progress  the failure-mode treemap and the agent-suggestion queue
+    labels    structured present/absent decisions after taxonomy stabilization
 
   Talks to the file-backed API in server.py:
     GET/POST /api/samples  /api/annotations  /api/patterns  /api/suggestions
@@ -28,7 +29,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Cartwheel error analysis</title>
+<title>Cartwheel Trace Lab</title>
 <style>
   :root {
     /* role hues (Gestalt similarity: one hue per role, full saturation) */
@@ -38,6 +39,7 @@
     --role-tool-result: #7c3aed;
     --role-system: #6b7280;
     --role-retrieval: #0891b2;
+    --role-model: #db2777;
 
     --bg: #f7f7f8;
     --panel: #ffffff;
@@ -73,6 +75,10 @@
     padding: 6px 14px; border-radius: 6px; cursor: pointer; font: inherit;
   }
   .views button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .trace-search {
+    width: 150px; border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; font: inherit; font-size: 13px;
+  }
   .spacer { flex: 1; }
   .counts { color: var(--muted); font-size: 13px; }
   .nav { display: flex; gap: 4px; align-items: center; }
@@ -139,6 +145,10 @@
   .msg[data-role="system"] .role      { color: var(--role-system); }
   .msg[data-role="retrieval"]   { border-left-color: var(--role-retrieval); }
   .msg[data-role="retrieval"] .role   { color: var(--role-retrieval); }
+  .msg[data-role="observation"] { border-left-color: var(--role-retrieval); }
+  .msg[data-role="observation"] .role { color: var(--role-retrieval); }
+  .msg[data-role="model_call"]  { border-left-color: var(--role-model); }
+  .msg[data-role="model_call"] .role { color: var(--role-model); }
   .msg.boiler { opacity: .5; }                /* identical-across-traces content */
 
   .msg .text { white-space: pre-wrap; word-wrap: break-word; }
@@ -150,6 +160,21 @@
     font-size: 12.5px; overflow-x: auto; white-space: pre;
   }
   .result-summary { color: var(--muted); font-size: 13px; }
+
+  /* Scenario ground truth stays collapsed during the first read to avoid
+     anchoring the human before they inspect the actual trace. */
+  .scenario-card {
+    max-width: 980px; margin: 0 auto 14px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  }
+  .scenario-card .question { margin: 4px 0; }
+  .scenario-card details { margin-top: 6px; }
+  .scenario-card summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .scenario-card .expected { border-left: 3px solid #dc2626; padding: 8px 10px;
+                             background: #fef2f2; margin-top: 6px; }
+  .chip { display: inline-block; font-size: 11px; padding: 2px 7px;
+          border-radius: 10px; background: #eef2ff; color: #3730a3; margin-right: 4px; }
+  .chip.retry { background: #fee2e2; color: #991b1b; }
 
   /* ---- highlights + margin notes ---- */
   .hl { background: var(--hl); border-radius: 2px; cursor: pointer; }
@@ -241,17 +266,64 @@
   .sugg-row .quote { flex: 1; cursor: pointer; }
   .sugg-row .quote:hover { color: var(--role-user); }
   .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+
+  /* ---- structured labeling view ---- */
+  #labels-view { padding: 18px; max-width: 1180px; margin: 0 auto; }
+  .label-help { color: var(--muted); margin-bottom: 12px; }
+  .label-table-wrap { overflow-x: auto; background: var(--panel);
+                      border: 1px solid var(--line); border-radius: 8px; }
+  .label-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .label-table th, .label-table td { padding: 8px 10px; border-bottom: 1px solid var(--line);
+                                     text-align: left; vertical-align: top; }
+  .label-table th { position: sticky; top: 51px; background: #f9fafb; z-index: 2; }
+  .label-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px;
+                  overflow: hidden; white-space: nowrap; }
+  .label-toggle button { border: 0; border-right: 1px solid var(--line); background: #fff;
+                         padding: 3px 7px; cursor: pointer; }
+  .label-toggle button:last-child { border-right: 0; }
+  .label-toggle button.active-pass { background: #d1fae5; color: #065f46; }
+  .label-toggle button.active-fail { background: #fee2e2; color: #991b1b; }
+
+  /* ---- run and model-call views ---- */
+  #runs-view, #models-view { padding: 18px; max-width: 1180px; margin: 0 auto; }
+  .run-grid, .model-grid { display: grid; gap: 10px; }
+  .run-card, .model-card { background: var(--panel); border: 1px solid var(--line);
+                           border-radius: 8px; padding: 12px; }
+  .run-card { cursor: pointer; }
+  .run-card:hover { border-color: var(--role-user); }
+  .run-card.selected { box-shadow: 0 0 0 2px var(--role-user); }
+  .card-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .card-head strong { font-size: 14px; }
+  .card-meta { color: var(--muted); font-size: 12.5px; }
+  .model-stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0 12px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 8px 10px; min-width: 120px; }
+  .stat strong { display: block; font-size: 18px; }
+  .filters { display: flex; gap: 8px; align-items: center; }
+  .filters select, .sync-button { border: 1px solid var(--line); background: var(--bg);
+    padding: 6px 8px; border-radius: 6px; font: inherit; font-size: 12px; }
+  .sync-button { cursor: pointer; }
+  .sync-status { color: var(--muted); font-size: 11px; max-width: 210px; }
+  .model-flow { font-family: ui-monospace, monospace; color: var(--role-model);
+                font-size: 12px; margin: 4px 0; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Cartwheel <span class="dim">error analysis</span></h1>
+  <h1>Cartwheel <span class="dim">Trace Lab</span></h1>
   <div class="views">
     <button data-view="trace" class="active">Trace</button>
+    <button data-view="runs">Runs</button>
+    <button data-view="models">Model calls</button>
     <button data-view="map">Map</button>
     <button data-view="progress">Progress</button>
+    <button data-view="labels">Labels</button>
   </div>
   <div class="spacer"></div>
+  <div class="filters"><select id="run-filter"><option value="">All traces</option></select>
+    <button id="sync-now" class="sync-button">Sync now</button>
+    <span id="sync-status" class="sync-status"></span></div>
+  <input id="trace-search" class="trace-search" placeholder="scenario or trace id" />
   <div class="nav" id="trace-nav">
     <button id="prev">&larr;</button>
     <span class="pos" id="pos">0 / 0</span>
@@ -262,10 +334,29 @@
 
 <div id="trace-view" class="view active">
   <div class="trace-header" id="trace-header"></div>
+  <div class="scenario-card" id="scenario-card"></div>
   <div class="trace-body-wrap">
     <div class="trace-body" id="trace-body"></div>
     <div class="margin-col" id="margin-col"></div>
   </div>
+</div>
+
+<div id="runs-view" class="view">
+  <div class="section-title">Scenario runs</div>
+  <div class="label-help">Each batch remains available. Inferred runs contain older traces recorded before run IDs were added.</div>
+  <div id="run-grid" class="run-grid"></div>
+</div>
+
+<div id="models-view" class="view">
+  <div class="section-title">Model calls</div>
+  <div id="model-stats" class="model-stats"></div>
+  <div id="model-grid" class="model-grid"></div>
+</div>
+
+<div id="labels-view" class="view">
+  <div class="section-title">Structured labeling</div>
+  <div class="label-help">Use this only after the failure taxonomy stabilizes. Present means the named failure occurs in the trace; absent means it does not.</div>
+  <div id="labels-grid"></div>
 </div>
 
 <div id="map-view" class="view">
@@ -299,14 +390,19 @@ const state = {
   suggestions: [],   // [{id, trace_id, mode, quote, start, end}]
   patterns: {},      // {mode: {definition, status, count, example_trace_ids, example_quotes}}
   graph: {nodes: [], clusters: []},
+  context: {scenarios: {}, traces: {}},
+  runs: [],
+  sync: {enabled: false, in_progress: false},
+  selectedRun: new URLSearchParams(window.location.search).get('run') || '',
   cur: 0,            // index into samples
 };
 
 const api = {
   async get(path) { const r = await fetch(path); return r.json(); },
   async post(path, body) {
-    await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
-                       body: JSON.stringify(body)});
+    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify(body)});
+    return r.json();
   },
 };
 
@@ -320,15 +416,22 @@ function asAnnotationList(a) {
 }
 
 async function loadAll() {
-  const [samples, annotations, suggestions, patterns, graph] = await Promise.all([
+  const [samples, annotations, suggestions, patterns, graph, context, runs, sync] = await Promise.all([
     api.get('/api/samples'), api.get('/api/annotations'),
     api.get('/api/suggestions'), api.get('/api/patterns'), api.get('/api/graph'),
+    api.get('/api/context'), api.get('/api/runs'), api.get('/api/sync-status'),
   ]);
   state.samples = Array.isArray(samples) ? samples : [];
   state.annotations = asAnnotationList(annotations);
   state.suggestions = Array.isArray(suggestions) ? suggestions : [];
   state.patterns = patterns && typeof patterns === 'object' ? patterns : {};
   state.graph = graph && graph.nodes ? graph : {nodes: [], clusters: []};
+  state.context = context && context.scenarios ? context : {scenarios: {}, traces: {}};
+  state.runs = Array.isArray(runs) ? runs : [];
+  state.sync = sync && typeof sync === 'object' ? sync : state.sync;
+  if (state.selectedRun && !state.runs.some(run => run.run_id === state.selectedRun)) {
+    state.selectedRun = '';
+  }
 }
 
 /* localStorage backup of human annotations, per SKILL.md */
@@ -344,20 +447,54 @@ async function saveAnnotations() {
 /* ------------------------------------------------------------------ *
  * Rendering: the trace view                                          *
  * ------------------------------------------------------------------ */
-function curTrace() { return state.samples[state.cur]; }
+function traceRunId(sample) {
+  const context = (state.context.traces || {})[sample.trace_id] || {};
+  return context.run_id || (sample.meta || {}).run_id || '';
+}
+function visibleSamples() {
+  return state.selectedRun
+    ? state.samples.filter(sample => traceRunId(sample) === state.selectedRun)
+    : state.samples;
+}
+function curTrace() { return visibleSamples()[state.cur]; }
 
 function renderHeader() {
   const s = curTrace();
   const h = document.getElementById('trace-header');
   if (!s) { h.innerHTML = '<span class="meta">no samples yet</span>'; return; }
   const m = s.meta || {};
+  const tc = (state.context.traces || {})[s.trace_id] || {};
   const bits = [];
   bits.push(`<span class="tid">${escape(s.trace_id)}</span>`);
   if (m.role)  bits.push(`<span class="meta">role: ${escape(m.role)}</span>`);
   if (m.store) bits.push(`<span class="meta">store: ${escape(m.store)}</span>`);
   if (m.prompt_version) bits.push(`<span class="meta">prompt: ${escape(m.prompt_version)}</span>`);
+  if (tc.timestamp) bits.push(`<span class="meta">${escape(tc.timestamp)}</span>`);
+  if (tc.turn_count) bits.push(`<span class="chip">turn ${tc.turn_index}/${tc.turn_count}</span>`);
+  if (tc.attempt) bits.push(`<span class="chip${tc.is_retry ? ' retry' : ''}">${tc.is_retry ? 'retry ' : 'attempt '}${tc.attempt}</span>`);
+  (tc.models || []).forEach(model => bits.push(`<span class="chip">${escape(model)}</span>`));
+  (tc.tools || []).forEach(tool => bits.push(`<span class="chip mono">${escape(tool)}</span>`));
   (s.flags || []).forEach(f => bits.push(`<span class="flag">${escape(f)}</span>`));
   h.innerHTML = bits.join(' ');
+}
+
+function renderScenarioContext() {
+  const el = document.getElementById('scenario-card');
+  const sample = curTrace();
+  if (!sample) { el.style.display = 'none'; return; }
+  const scenarioId = (sample.meta || {}).scenario_id;
+  const scenario = (state.context.scenarios || {})[scenarioId];
+  if (!scenario) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  const questions = (scenario.messages || []).map((message, i) =>
+    `<div class="question"><strong>${i ? `Follow-up ${i}` : 'Opening'}:</strong> ${escape(message)}</div>`
+  ).join('');
+  const source = scenario.evidence ? pretty(scenario.evidence) : 'No structured evidence source';
+  el.innerHTML = `<div><strong>${escape(scenarioId)}</strong> · ${escape(scenario.scenario_group || '')} · ${escape(scenario.role || '')}</div>` +
+    questions +
+    `<details><summary>Reveal expected outcome and evidence</summary>` +
+    `<div class="expected"><strong>${escape(scenario.expected_outcome || 'human judgment')}</strong><br>` +
+    `${escape(scenario.expected || '')}<pre class="json">${escape(source)}</pre></div></details>`;
 }
 
 /* Render one trace as a sequence of steps. A tool_call and the tool_result
@@ -409,12 +546,43 @@ function renderMsg(m, idx) {
     } else {
       inner = `<pre class="json annotatable" data-idx="${idx}">${escape(full)}</pre>`;
     }
+  } else if (role === 'model_call') {
+    const call = m.model_call || {};
+    const usage = call.usage_details || {};
+    const cost = call.total_cost !== undefined && call.total_cost !== null
+      ? call.total_cost : (call.cost_details || {}).total;
+    inner = `<div class="card-head"><strong>${escape(call.model || m.name || 'model')}</strong>` +
+      `<span class="card-meta">${escape(call.provider || 'provider unavailable')}</span>` +
+      `<span class="card-meta">${escape(call.operation || '')}</span>` +
+      `<span class="card-meta">${escape(formatDuration(call))}</span></div>` +
+      `<div class="model-flow">model request → published response${call.status ? ` · ${escape(call.status)}` : ''}</div>` +
+      `<details class="args"><summary>observable input</summary><pre class="json">${escape(pretty(m.input))}</pre></details>` +
+      `<details class="args"><summary>observable output</summary><pre class="json annotatable" data-idx="${idx}">${escape(pretty(m.output))}</pre></details>` +
+      `<details class="args"><summary>usage and request metadata</summary><pre class="json">${escape(pretty({
+        input_tokens: usage.input || usage.input_tokens,
+        output_tokens: usage.output || usage.output_tokens,
+        total_tokens: usage.total || usage.total_tokens,
+        cost: cost,
+        model_parameters: call.model_parameters,
+        response_id: call.id,
+        parent_observation_id: call.parent_observation_id,
+      }))}</pre></details>` +
+      `<details class="args"><summary>raw metadata</summary><pre class="json">${escape(pretty(call.metadata || {}))}</pre></details>`;
   } else {
     const text = m.text !== undefined ? m.text : pretty(m.content);
     inner = `<div class="text annotatable" data-idx="${idx}">${escape(text)}</div>`;
   }
   return `<div class="msg${boiler}" data-role="${role}" data-idx="${idx}">` +
          `<div class="role">${escape(label)}</div>${inner}</div>`;
+}
+
+function formatDuration(call) {
+  if (call.latency_seconds !== undefined && call.latency_seconds !== null) {
+    return `${Number(call.latency_seconds).toFixed(2)}s`;
+  }
+  if (!call.start_time || !call.end_time) return 'latency unavailable';
+  const seconds = (new Date(call.end_time) - new Date(call.start_time)) / 1000;
+  return Number.isFinite(seconds) ? `${seconds.toFixed(2)}s` : 'latency unavailable';
 }
 
 /* ------------------------------------------------------------------ *
@@ -702,6 +870,110 @@ async function bulkQueue(accept) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Runs + model calls                                                 *
+ * ------------------------------------------------------------------ */
+function selectRun(runId, openTrace = false) {
+  state.selectedRun = runId || '';
+  state.cur = 0;
+  const url = new URL(window.location.href);
+  state.selectedRun ? url.searchParams.set('run', state.selectedRun) : url.searchParams.delete('run');
+  history.replaceState({}, '', url);
+  renderRunFilter(); renderRuns(); renderModels(); renderHeader();
+  renderScenarioContext(); renderTrace(); renderMap(); renderLabels(); updatePos(); updateCounts();
+  if (openTrace) switchView('trace');
+}
+
+function renderRunFilter() {
+  const select = document.getElementById('run-filter');
+  select.innerHTML = `<option value="">All traces</option>` + state.runs.map(run =>
+    `<option value="${escape(run.run_id)}" ${run.run_id === state.selectedRun ? 'selected' : ''}>` +
+    `${escape(run.name || run.run_id)} · ${run.trace_count || 0} traces</option>`).join('');
+}
+
+function renderRuns() {
+  const el = document.getElementById('run-grid');
+  if (!state.runs.length) {
+    el.innerHTML = '<div class="empty">No synchronized runs yet.</div>';
+    return;
+  }
+  el.innerHTML = state.runs.map(run =>
+    `<div class="run-card ${run.run_id === state.selectedRun ? 'selected' : ''}" data-run="${escape(run.run_id)}">` +
+      `<div class="card-head"><strong>${escape(run.name || run.run_id)}</strong>` +
+      `${run.inferred ? '<span class="chip retry">inferred metadata</span>' : '<span class="chip">recorded run ID</span>'}` +
+      `<span class="card-meta">${escape(run.status || '')}</span></div>` +
+      `<div class="card-meta">${escape(run.started_at || 'start unavailable')} → ${escape(run.ended_at || 'end unavailable')}</div>` +
+      `<div>${run.scenario_count || 0} scenarios · ${run.trace_count || 0} traces · ${escape((run.models || []).join(', ') || 'model unavailable')}</div>` +
+    `</div>`).join('');
+  el.querySelectorAll('[data-run]').forEach(card => card.onclick = () => selectRun(card.dataset.run, true));
+}
+
+function modelMessages(sample) {
+  return (sample.trace || []).filter(message => message.role === 'model_call');
+}
+
+function numeric(obj, keys) {
+  for (const key of keys) {
+    const value = obj && obj[key];
+    if (value !== undefined && value !== null && Number.isFinite(Number(value))) return Number(value);
+  }
+  return 0;
+}
+
+function renderModels() {
+  const samples = visibleSamples();
+  const calls = samples.flatMap(sample => modelMessages(sample).map(message => ({sample, message, call: message.model_call || {}})));
+  const inputTokens = calls.reduce((sum, item) => sum + numeric(item.call.usage_details, ['input', 'input_tokens', 'prompt_tokens']), 0);
+  const outputTokens = calls.reduce((sum, item) => sum + numeric(item.call.usage_details, ['output', 'output_tokens', 'completion_tokens']), 0);
+  const cost = calls.reduce((sum, item) => sum + numeric(item.call, ['total_cost']), 0);
+  const errors = calls.filter(item => String(item.call.status || '').toLowerCase().includes('error') || item.call.status_message).length;
+  document.getElementById('model-stats').innerHTML = [
+    ['model calls', calls.length], ['input tokens', inputTokens || 'unavailable'],
+    ['output tokens', outputTokens || 'unavailable'], ['cost', cost ? `$${cost.toFixed(4)}` : 'unavailable'],
+    ['errors', errors],
+  ].map(([label, value]) => `<div class="stat"><strong>${escape(value)}</strong>${escape(label)}</div>`).join('');
+  const el = document.getElementById('model-grid');
+  if (!calls.length) {
+    el.innerHTML = '<div class="empty">No model spans were published for the selected run. Tool and final-output traces remain available in Trace view.</div>';
+    return;
+  }
+  el.innerHTML = calls.map(({sample, message, call}) => {
+    const usage = call.usage_details || {};
+    return `<div class="model-card"><div class="card-head">` +
+      `<button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape((sample.meta || {}).scenario_id || clip(sample.trace_id, 12))}</button>` +
+      `<strong>${escape(call.model || message.name || 'model')}</strong>` +
+      `<span class="card-meta">${escape(call.provider || 'provider unavailable')}</span>` +
+      `<span class="card-meta">${escape(formatDuration(call))}</span></div>` +
+      `<div class="model-flow">${escape(call.operation || 'model call')} · parent ${escape(call.parent_observation_id || 'unavailable')}</div>` +
+      `<details><summary>input and output</summary><pre class="json">${escape(pretty({input: message.input, output: message.output}))}</pre></details>` +
+      `<details><summary>metadata</summary><pre class="json">${escape(pretty({usage, parameters: call.model_parameters, status: call.status, error: call.status_message, metadata: call.metadata}))}</pre></details>` +
+    `</div>`;
+  }).join('');
+  el.querySelectorAll('.open-trace').forEach(button => button.onclick = () => gotoTrace(button.dataset.tid));
+}
+
+function renderSyncStatus() {
+  const status = state.sync || {};
+  const el = document.getElementById('sync-status');
+  if (!status.enabled && !status.last_success_at) {
+    el.textContent = status.error || status.message || 'offline cache';
+    return;
+  }
+  if (status.in_progress) { el.textContent = 'syncing Langfuse…'; return; }
+  if (status.error) { el.textContent = `sync retry: ${status.error}`; return; }
+  el.textContent = status.last_success_at
+    ? `synced ${new Date(status.last_success_at).toLocaleTimeString()} · +${status.added || 0} / ↻${status.updated || 0}`
+    : 'waiting for first sync';
+}
+
+document.getElementById('run-filter').onchange = event => selectRun(event.target.value);
+document.getElementById('sync-now').onclick = async () => {
+  try {
+    const result = await api.post('/api/sync', {});
+    toast(result.started ? 'Langfuse sync started' : 'sync already running');
+  } catch (error) { toast('could not start sync'); }
+};
+
+/* ------------------------------------------------------------------ *
  * Map view (canvas scatter of the 2D projection)                     *
  * ------------------------------------------------------------------ */
 function renderMap() {
@@ -725,7 +997,7 @@ function renderMap() {
   const sx = v => pad + (v - minX) / ((maxX - minX) || 1) * (w - 2 * pad);
   const sy = v => pad + (v - minY) / ((maxY - minY) || 1) * (h - 2 * pad);
   const hues = ['#94a3b8','#a78bfa','#60a5fa','#34d399','#fbbf24','#f472b6','#22d3ee','#fb923c'];
-  const sampleIds = new Set(state.samples.map(s => s.trace_id));
+  const sampleIds = new Set(visibleSamples().map(s => s.trace_id));
   const annIds = new Set(state.annotations.map(a => a.trace_id));
 
   nodes.forEach(n => {
@@ -746,7 +1018,7 @@ document.getElementById('map').addEventListener('click', (e) => {
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   let best = null, bestD = 1e9;
-  const sampleIds = new Set(state.samples.map(s => s.trace_id));
+  const sampleIds = new Set(visibleSamples().map(s => s.trace_id));
   nodes.forEach(n => {
     if (!sampleIds.has(n.trace_id)) return;
     const d = (n.px - mx) ** 2 + (n.py - my) ** 2;
@@ -759,22 +1031,37 @@ document.getElementById('map').addEventListener('click', (e) => {
  * Navigation + view switching                                        *
  * ------------------------------------------------------------------ */
 function gotoTrace(tid) {
-  const i = state.samples.findIndex(s => s.trace_id === tid);
+  let i = visibleSamples().findIndex(s => s.trace_id === tid);
+  if (i < 0) {
+    state.selectedRun = '';
+    renderRunFilter();
+    i = visibleSamples().findIndex(s => s.trace_id === tid);
+  }
   if (i < 0) { toast('that trace is not in the current sample'); return; }
   state.cur = i;
   switchView('trace');
-  renderHeader(); renderTrace(); updatePos();
+  renderHeader(); renderScenarioContext(); renderTrace(); updatePos();
 }
 function updatePos() {
   document.getElementById('pos').textContent =
-    state.samples.length ? `${state.cur + 1} / ${state.samples.length}` : '0 / 0';
+    visibleSamples().length ? `${state.cur + 1} / ${visibleSamples().length}` : '0 / 0';
 }
 document.getElementById('prev').onclick = () => {
-  if (state.cur > 0) { state.cur--; renderHeader(); renderTrace(); updatePos(); }
+  if (state.cur > 0) { state.cur--; renderHeader(); renderScenarioContext(); renderTrace(); updatePos(); }
 };
 document.getElementById('next').onclick = () => {
-  if (state.cur < state.samples.length - 1) { state.cur++; renderHeader(); renderTrace(); updatePos(); }
+  if (state.cur < visibleSamples().length - 1) { state.cur++; renderHeader(); renderScenarioContext(); renderTrace(); updatePos(); }
 };
+document.getElementById('trace-search').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const query = e.target.value.trim().toLowerCase();
+  const index = visibleSamples().findIndex(sample =>
+    sample.trace_id.toLowerCase().includes(query) ||
+    String((sample.meta || {}).scenario_id || '').toLowerCase().includes(query));
+  if (index < 0) { toast('no selected trace matches that id'); return; }
+  state.cur = index; switchView('trace');
+  renderHeader(); renderScenarioContext(); renderTrace(); updatePos();
+});
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   if (e.key === 'j' || e.key === 'ArrowDown') document.getElementById('next').click();
@@ -788,15 +1075,65 @@ function switchView(name) {
   document.getElementById(name + '-view').classList.add('active');
   document.getElementById('trace-nav').style.display = name === 'trace' ? 'flex' : 'none';
   if (name === 'map') renderMap();
+  if (name === 'runs') renderRuns();
+  if (name === 'models') renderModels();
   if (name === 'progress') renderProgress();
+  if (name === 'labels') renderLabels();
 }
 document.querySelectorAll('.views button').forEach(b =>
   b.onclick = () => switchView(b.dataset.view));
 
 function updateCounts() {
   document.getElementById('counts').textContent =
-    `${state.samples.length} traces · ${state.annotations.length} notes · ` +
+    `${visibleSamples().length}/${state.samples.length} traces · ${state.annotations.length} notes · ` +
     `${normalizePatterns(state.patterns).length} modes · ${state.suggestions.length} suggestions`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Structured labels: activated only after human-authored modes exist. *
+ * ------------------------------------------------------------------ */
+function structuredDecision(traceId, mode) {
+  const matches = state.annotations.filter(a =>
+    a.trace_id === traceId && a.mode === mode && (a.label === 0 || a.label === 1));
+  return matches.length ? matches[matches.length - 1] : null;
+}
+
+function renderLabels() {
+  const el = document.getElementById('labels-grid');
+  const modes = normalizePatterns(state.patterns).filter(mode => mode.name);
+  if (!modes.length) {
+    el.innerHTML = '<div class="empty">No finalized modes yet. Open-code traces first; this table appears after your taxonomy has modes.</div>';
+    return;
+  }
+  const head = modes.map(mode => `<th>${escape(mode.name)}</th>`).join('');
+  const rows = visibleSamples().map(sample => {
+    const cells = modes.map(mode => {
+      const current = structuredDecision(sample.trace_id, mode.name);
+      return `<td><div class="label-toggle" data-trace="${escape(sample.trace_id)}" data-mode="${escape(mode.name)}">` +
+        `<button data-label="0" class="${current && current.label === 0 ? 'active-pass' : ''}">absent</button>` +
+        `<button data-label="1" class="${current && current.label === 1 ? 'active-fail' : ''}">present</button></div></td>`;
+    }).join('');
+    const sid = (sample.meta || {}).scenario_id || '';
+    return `<tr><td><button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape(sid || clip(sample.trace_id, 12))}</button></td>${cells}</tr>`;
+  }).join('');
+  el.innerHTML = `<div class="label-table-wrap"><table class="label-table"><thead><tr><th>trace</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  el.querySelectorAll('.open-trace').forEach(button => button.onclick = () => gotoTrace(button.dataset.tid));
+  el.querySelectorAll('.label-toggle button').forEach(button => button.onclick = () => {
+    const group = button.closest('.label-toggle');
+    saveStructuredLabel(group.dataset.trace, group.dataset.mode, Number(button.dataset.label));
+  });
+}
+
+async function saveStructuredLabel(traceId, mode, label) {
+  state.annotations.push({
+    id: 'l' + Date.now() + Math.floor(Math.random() * 1000),
+    trace_id: traceId, mode, label,
+    note: label ? `${mode} present` : `${mode} absent`,
+    source: 'human_structured_label', ts: new Date().toISOString(),
+  });
+  await saveAnnotations();
+  renderLabels(); updateCounts();
+  toast(`saved ${mode}: ${label ? 'present' : 'absent'}`);
 }
 
 /* ------------------------------------------------------------------ *
@@ -806,9 +1143,10 @@ function updateCounts() {
 let lastSig = '';
 async function poll() {
   try {
-    const [samples, suggestions, patterns, annotations] = await Promise.all([
+    const [samples, suggestions, patterns, annotations, runs, sync, context, graph] = await Promise.all([
       api.get('/api/samples'), api.get('/api/suggestions'),
       api.get('/api/patterns'), api.get('/api/annotations'),
+      api.get('/api/runs'), api.get('/api/sync-status'), api.get('/api/context'), api.get('/api/graph'),
     ]);
     const newSampleCount = Array.isArray(samples) ? samples.length : 0;
     const grewSamples = newSampleCount > state.samples.length;
@@ -825,7 +1163,8 @@ async function poll() {
     remote.forEach(a => { const k = key(a); if (!seen.has(k)) { seen.add(k); merged.push(a); } });
 
     const sig = JSON.stringify([newSampleCount, newSuggCount,
-      normalizePatterns(patterns).length, merged.length]);
+      normalizePatterns(patterns).length, merged.length, (runs || []).length,
+      sync && sync.last_success_at, sync && sync.in_progress]);
     if (sig === lastSig) return;
     lastSig = sig;
 
@@ -833,11 +1172,17 @@ async function poll() {
     state.suggestions = Array.isArray(suggestions) ? suggestions : state.suggestions;
     state.patterns = patterns && typeof patterns === 'object' ? patterns : state.patterns;
     state.annotations = merged;
+    state.runs = Array.isArray(runs) ? runs : state.runs;
+    state.sync = sync && typeof sync === 'object' ? sync : state.sync;
+    state.context = context && context.scenarios ? context : state.context;
+    state.graph = graph && graph.nodes ? graph : state.graph;
+    if (state.cur >= visibleSamples().length) state.cur = Math.max(0, visibleSamples().length - 1);
 
     if (grewSamples) toast(`new traces added to your batch (${newSampleCount})`);
     if (grewSugg) toast(`new agent suggestions to review (${newSuggCount})`);
 
-    renderHeader(); renderTrace(); renderProgress(); updatePos(); updateCounts();
+    renderRunFilter(); renderSyncStatus(); renderRuns(); renderModels();
+    renderHeader(); renderScenarioContext(); renderTrace(); renderProgress(); renderLabels(); updatePos(); updateCounts();
   } catch (e) { /* server not up yet; keep trying */ }
 }
 
@@ -868,7 +1213,8 @@ window.addEventListener('resize', () => {
  * ------------------------------------------------------------------ */
 (async function boot() {
   await loadAll();
-  renderHeader(); renderTrace(); renderProgress(); updatePos(); updateCounts();
+  renderRunFilter(); renderSyncStatus(); renderRuns(); renderModels();
+  renderHeader(); renderScenarioContext(); renderTrace(); renderProgress(); renderLabels(); updatePos(); updateCounts();
   setInterval(poll, 2000);
 })();
 </script>

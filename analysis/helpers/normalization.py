@@ -12,6 +12,24 @@ from datetime import date, datetime
 from typing import Any
 
 
+_SENSITIVE_KEY_PARTS = ("authorization", "api_key", "apikey", "password", "secret", "token", "cookie")
+
+
+def _redact(value: Any) -> Any:
+    """Remove credential-shaped metadata before it reaches the review UI."""
+    value = _data(value)
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): "[redacted]"
+            if any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS)
+            else _redact(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 def _data(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json", by_alias=True)
@@ -29,6 +47,32 @@ def _text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _message_text(value: Any) -> str:
+    """Extract readable prose from provider message/part containers.
+
+    Langfuse preserves OpenAI messages as nested ``role -> parts -> content``
+    objects. Reviewers need the sentence, while the raw objects remain intact
+    in the normalized input/output fields for audit and debugging.
+    """
+    value = _data(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [_message_text(item) for item in value]
+        return "\n".join(part for part in parts if part)
+    if isinstance(value, dict):
+        for key in ("content", "text"):
+            if key in value:
+                extracted = _message_text(value[key])
+                if extracted:
+                    return extracted
+        if "parts" in value:
+            extracted = _message_text(value["parts"])
+            if extracted:
+                return extracted
+    return _text(value)
+
+
 def _timestamp(value: Any) -> str | None:
     """Return an ISO timestamp without dropping an existing string value."""
     if value is None:
@@ -43,8 +87,24 @@ def _observation_record(value: Any) -> dict[str, Any] | None:
     observation = _data(value)
     if not isinstance(observation, dict):
         return None
+    metadata = _data(observation.get("metadata"))
+    attributes = _metadata({"metadata": metadata})
+    model = (
+        observation.get("model")
+        or observation.get("model_id")
+        or attributes.get("gen_ai.request.model")
+        or attributes.get("gen_ai.response.model")
+    )
+    provider = (
+        attributes.get("gen_ai.provider.name")
+        or attributes.get("gen_ai.system")
+        or observation.get("provider")
+    )
     return {
         "id": observation.get("id"),
+        "trace_id": observation.get("trace_id") or observation.get("traceId"),
+        "parent_observation_id": observation.get("parent_observation_id")
+        or observation.get("parentObservationId"),
         "type": observation.get("type"),
         "name": observation.get("name"),
         "start_time": _timestamp(
@@ -53,8 +113,10 @@ def _observation_record(value: Any) -> dict[str, Any] | None:
         "end_time": _timestamp(
             observation.get("end_time") or observation.get("endTime")
         ),
-        "model": observation.get("model") or observation.get("model_id"),
-        "model_parameters": _data(
+        "model": model,
+        "provider": provider,
+        "operation": attributes.get("gen_ai.operation.name"),
+        "model_parameters": _redact(
             observation.get("model_parameters") or observation.get("modelParameters")
         ),
         "input": _data(observation.get("input")),
@@ -74,8 +136,28 @@ def _observation_record(value: Any) -> dict[str, Any] | None:
         "time_to_first_token_seconds": observation.get("time_to_first_token")
         if observation.get("time_to_first_token") is not None
         else observation.get("timeToFirstToken"),
-        "metadata": _data(observation.get("metadata")),
+        "status": observation.get("status") or observation.get("level"),
+        "status_message": observation.get("status_message")
+        or observation.get("statusMessage"),
+        "completion_start_time": _timestamp(
+            observation.get("completion_start_time")
+            or observation.get("completionStartTime")
+        ),
+        "metadata": _redact(metadata),
     }
+
+
+def _is_model_observation(observation: dict[str, Any]) -> bool:
+    """Identify model spans from Langfuse type, name, or OTel attributes."""
+    kind = str(observation.get("type") or "").lower()
+    name = str(observation.get("name") or "").lower()
+    attributes = _metadata({"metadata": observation.get("metadata")})
+    operation = str(attributes.get("gen_ai.operation.name") or "").lower()
+    if kind in {"generation", "model"}:
+        return True
+    if "openai.response" in name or "model" in name:
+        return True
+    return bool(attributes.get("gen_ai.request.model")) and operation != "execute_tool"
 
 
 def _metadata(record: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +190,14 @@ def _observation_message(observation: Any) -> list[dict[str, Any]]:
     out = obs.get("output")
     lowered = name.lower()
     messages: list[dict[str, Any]] = []
+    # Container spans repeat the trace-level input/output and would make the
+    # reviewer see the same final answer twice. Their timing and metadata stay
+    # available in ``observations``; the readable timeline shows only content
+    # produced by a model, retrieval step, or tool.
+    if name == "cartwheel.session_message" or obs.get("type") in {"AGENT"}:
+        return []
+    if lowered == "agent workflow":
+        return []
     if "tool" in lowered or obs.get("type") in {"TOOL", "tool"}:
         if inp is not None:
             messages.append(
@@ -117,6 +207,18 @@ def _observation_message(observation: Any) -> list[dict[str, Any]]:
             messages.append(
                 {"role": "tool_result", "name": name, "content": _data(out)}
             )
+    elif _is_model_observation(obs):
+        record = _observation_record(obs) or {}
+        messages.append(
+            {
+                "role": "model_call",
+                "label": name,
+                "name": name,
+                "input": _data(inp),
+                "output": _data(out),
+                "model_call": record,
+            }
+        )
     elif out is not None:
         messages.append({"role": "observation", "label": name, "text": _text(out)})
     return messages
@@ -135,19 +237,38 @@ def _messages(record: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(item, dict):
                 continue
             if item.get("user") is not None:
-                messages.append({"role": "user", "text": _text(item["user"])})
+                messages.append({"role": "user", "text": _message_text(item["user"])})
             if item.get("agent") is not None:
-                messages.append({"role": "assistant", "text": _text(item["agent"])})
+                messages.append(
+                    {"role": "assistant", "text": _message_text(item["agent"])}
+                )
         if messages:
             return messages
 
     messages = []
     if record.get("input") is not None:
-        messages.append({"role": "user", "text": _text(record.get("input"))})
-    for observation in record.get("observations") or []:
+        messages.append(
+            {"role": "user", "text": _message_text(record.get("input"))}
+        )
+    # Langfuse's API returns a span tree, not guaranteed chronological order.
+    # Sorting is essential for causal review: a lookup must appear before the
+    # cancellation or refund decision that consumed its result.
+    observations = sorted(
+        record.get("observations") or [],
+        key=lambda item: str(
+            _data(item).get("start_time")
+            or _data(item).get("startTime")
+            or ""
+        )
+        if isinstance(_data(item), dict)
+        else "",
+    )
+    for observation in observations:
         messages.extend(_observation_message(observation))
     if record.get("output") is not None:
-        messages.append({"role": "assistant", "text": _text(record.get("output"))})
+        messages.append(
+            {"role": "assistant", "text": _message_text(record.get("output"))}
+        )
 
     segments = record.get("segments")
     if not messages and isinstance(segments, dict):
@@ -220,6 +341,9 @@ def normalize_trace(value: Any) -> dict[str, Any]:
         "scenario_id": raw.get("cartwheel_scenario_id")
         or metadata.get("cartwheel.scenario_id")
         or metadata.get("scenario_id"),
+        "run_id": raw.get("cartwheel_run_id")
+        or metadata.get("cartwheel.run_id")
+        or metadata.get("run_id"),
     }
     supplied_segments = raw.get("segments")
     segments = dict(supplied_segments) if isinstance(supplied_segments, dict) else {}
@@ -249,7 +373,7 @@ def normalize_trace(value: Any) -> dict[str, Any]:
         "features": features,
         "meta": {key: val for key, val in meta.items() if val is not None},
         "segments": segments,
-        "metadata": metadata,
+        "metadata": _redact(metadata),
         "permalink": raw.get("permalink") or raw.get("url"),
     }
 

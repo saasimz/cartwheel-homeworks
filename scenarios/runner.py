@@ -31,6 +31,8 @@ import json
 import time
 import urllib.error
 import urllib.request
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +68,7 @@ def load_scenarios(path: Path) -> list[dict[str, Any]]:
 
 
 def run_scenario(
-    scenario: dict[str, Any], base_url: str, model: str | None
+    scenario: dict[str, Any], base_url: str, model: str | None, run_id: str | None = None
 ) -> dict[str, Any]:
     """Play one scenario end to end. Returns a result record."""
     tuple_ = scenario.get("tuple", {})
@@ -88,6 +90,7 @@ def run_scenario(
                     "message": message,
                     "model": model,
                     "scenario_id": scenario["id"],
+                    "run_id": run_id,
                 },
                 token=session["token"],
             )
@@ -99,6 +102,7 @@ def run_scenario(
         error = str(exc)
     return {
         "scenario_id": scenario["id"],
+        "run_id": run_id,
         "scenario_group": scenario["scenario_group"],
         "model": model,
         "status": status,
@@ -115,6 +119,26 @@ def load_results(path: Path) -> dict[str, dict[str, Any]]:
         return {}
     records = load_jsonl(path)
     return {record["scenario_id"]: record for record in records}
+
+
+def _new_run_id() -> str:
+    """Create a readable, collision-resistant identifier for one batch.
+
+    The timestamp helps a reviewer recognize the execution while the random
+    suffix prevents two processes started in the same second from colliding.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"run-{stamp}-{uuid.uuid4().hex[:8]}"
+
+
+def resolve_run_id(requested: str | None, existing: dict[str, dict[str, Any]]) -> str:
+    """Reuse a saved batch id on resume unless the caller explicitly names one."""
+    if requested and requested.strip():
+        return requested.strip()
+    saved = {str(row.get("run_id")) for row in existing.values() if row.get("run_id")}
+    if len(saved) == 1:
+        return saved.pop()
+    return _new_run_id()
 
 
 def plan_run(
@@ -169,6 +193,11 @@ def main() -> None:
         default=None,
         help="comma separated scenario ids to run; their records replace earlier ones",
     )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="stable batch id recorded on every trace (generated automatically when omitted)",
+    )
     args = parser.parse_args()
 
     scenarios = load_scenarios(args.scenarios)
@@ -176,6 +205,7 @@ def main() -> None:
     ids = {item.strip() for item in args.ids.split(",") if item.strip()} if args.ids else None
     merging = args.resume or ids is not None
     existing = load_results(out_path) if merging else {}
+    run_id = resolve_run_id(args.run_id, existing)
     to_run, kept = plan_run(scenarios, existing, ids=ids, resume=args.resume)
     if args.limit is not None:
         to_run = to_run[: args.limit]
@@ -189,12 +219,12 @@ def main() -> None:
             out.write(json.dumps(record) + "\n")
         out.flush()
         for i, scenario in enumerate(to_run, start=1):
-            result = run_scenario(scenario, args.base_url, args.model)
+            result = run_scenario(scenario, args.base_url, args.model, run_id=run_id)
             out.write(json.dumps(result) + "\n")
             out.flush()
             completed += result["status"] == "completed"
             print(f"[{i}/{len(to_run)}] {result['scenario_id']}: {result['status']}")
-    print(f"\n{completed}/{len(to_run)} completed. Results: {out_path}")
+    print(f"\n{completed}/{len(to_run)} completed. Run: {run_id}. Results: {out_path}")
     print("Now open Langfuse and run reports/smoke.sql against ClickHouse.")
 
 
