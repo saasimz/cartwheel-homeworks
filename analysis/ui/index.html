@@ -6,7 +6,7 @@
   file, served by analysis/server.py, that renders Cartwheel agent traces for
   reading and annotation. Four views:
 
-    trace     read one trace, annotate the first failure in place
+    scenario  review one scenario at a time, with its traces nested as evidence
     map       a 2D projection of the whole store, clusters + sampled + annotated
     progress  the failure-mode treemap and the agent-suggestion queue
     labels    structured present/absent decisions after taxonomy stabilization
@@ -172,6 +172,20 @@
   .scenario-card summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   .scenario-card .expected { border-left: 3px solid #dc2626; padding: 8px 10px;
                              background: #fef2f2; margin-top: 6px; }
+  .scenario-tools { display: flex; flex-wrap: wrap; gap: 7px; align-items: center;
+                    margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
+  .trace-choice { border: 1px solid var(--line); background: var(--bg); border-radius: 6px;
+                  padding: 5px 8px; cursor: pointer; font: inherit; font-size: 12px; }
+  .trace-choice.active { background: #eef2ff; border-color: var(--role-user); color: #3730a3; }
+  .scenario-note { max-width: 980px; margin: 0 auto 14px; display: grid;
+                   grid-template-columns: 1fr auto; gap: 8px; }
+  .scenario-note textarea { min-height: 56px; resize: vertical; border: 1px solid var(--line);
+                            border-radius: 7px; padding: 8px 10px; font: inherit; }
+  .scenario-note button { border: 1px solid var(--ink); background: var(--ink); color: white;
+                          border-radius: 7px; padding: 7px 12px; cursor: pointer; }
+  .scenario-note-list { grid-column: 1 / -1; display: grid; gap: 5px; }
+  .scenario-note-item { background: #fffbeb; border-left: 3px solid #f59e0b;
+                        padding: 6px 9px; font-size: 12.5px; }
   .chip { display: inline-block; font-size: 11px; padding: 2px 7px;
           border-radius: 10px; background: #eef2ff; color: #3730a3; margin-right: 4px; }
   .chip.retry { background: #fee2e2; color: #991b1b; }
@@ -312,7 +326,7 @@
 <header>
   <h1>Cartwheel <span class="dim">Trace Lab</span></h1>
   <div class="views">
-    <button data-view="trace" class="active">Trace</button>
+    <button data-view="trace" class="active">Scenarios</button>
     <button data-view="runs">Runs</button>
     <button data-view="models">Model calls</button>
     <button data-view="map">Map</button>
@@ -320,10 +334,10 @@
     <button data-view="labels">Labels</button>
   </div>
   <div class="spacer"></div>
-  <div class="filters"><select id="run-filter"><option value="">All traces</option></select>
+  <div class="filters"><select id="run-filter"><option value="">All runs</option></select>
     <button id="sync-now" class="sync-button">Sync now</button>
     <span id="sync-status" class="sync-status"></span></div>
-  <input id="trace-search" class="trace-search" placeholder="scenario or trace id" />
+  <input id="trace-search" class="trace-search" placeholder="scenario or supporting trace id" />
   <div class="nav" id="trace-nav">
     <button id="prev">&larr;</button>
     <span class="pos" id="pos">0 / 0</span>
@@ -335,6 +349,7 @@
 <div id="trace-view" class="view active">
   <div class="trace-header" id="trace-header"></div>
   <div class="scenario-card" id="scenario-card"></div>
+  <div class="scenario-note" id="scenario-note"></div>
   <div class="trace-body-wrap">
     <div class="trace-body" id="trace-body"></div>
     <div class="margin-col" id="margin-col"></div>
@@ -396,7 +411,8 @@ const state = {
   sync: {enabled: false, in_progress: false},
   selectedRun: new URLSearchParams(window.location.search).get('run') || '',
   modelPage: 0,
-  cur: 0,            // index into samples
+  cur: 0,            // index into scenario groups (the human review unit)
+  activeTrace: {},   // scenario key -> selected supporting trace index
 };
 
 const api = {
@@ -458,16 +474,58 @@ function visibleSamples() {
     ? state.samples.filter(sample => traceRunId(sample) === state.selectedRun)
     : state.samples;
 }
-function curTrace() { return visibleSamples()[state.cur]; }
+function sampleScenarioId(sample) {
+  return String((sample.meta || {}).scenario_id || sample.trace_id);
+}
+function scenarioKey(sample) {
+  // A scenario id may be reused in a later run, so the run is part of the key.
+  return `${traceRunId(sample) || 'unassigned'}::${sampleScenarioId(sample)}`;
+}
+function visibleScenarios() {
+  const grouped = new Map();
+  visibleSamples().forEach(sample => {
+    const key = scenarioKey(sample);
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        runId: traceRunId(sample),
+        scenarioId: sampleScenarioId(sample),
+        samples: [],
+      });
+    }
+    grouped.get(key).samples.push(sample);
+  });
+  const groups = [...grouped.values()];
+  groups.forEach(group => group.samples.sort((left, right) => {
+    const leftContext = (state.context.traces || {})[left.trace_id] || {};
+    const rightContext = (state.context.traces || {})[right.trace_id] || {};
+    return Number(leftContext.turn_index || 0) - Number(rightContext.turn_index || 0) ||
+      Number(leftContext.attempt || 1) - Number(rightContext.attempt || 1) ||
+      String(leftContext.timestamp || '').localeCompare(String(rightContext.timestamp || ''));
+  }));
+  return groups.sort((a, b) =>
+    a.scenarioId.localeCompare(b.scenarioId, undefined, {numeric: true}) ||
+    a.runId.localeCompare(b.runId));
+}
+function curScenario() { return visibleScenarios()[state.cur]; }
+function curTrace() {
+  const scenario = curScenario();
+  if (!scenario) return null;
+  const index = Math.min(state.activeTrace[scenario.key] || 0, scenario.samples.length - 1);
+  return scenario.samples[index];
+}
 
 function renderHeader() {
   const s = curTrace();
+  const group = curScenario();
   const h = document.getElementById('trace-header');
-  if (!s) { h.innerHTML = '<span class="meta">no samples yet</span>'; return; }
+  if (!s || !group) { h.innerHTML = '<span class="meta">no scenarios yet</span>'; return; }
   const m = s.meta || {};
   const tc = (state.context.traces || {})[s.trace_id] || {};
   const bits = [];
-  bits.push(`<span class="tid">${escape(s.trace_id)}</span>`);
+  bits.push(`<span class="tid">${escape(group.scenarioId)}</span>`);
+  bits.push(`<span class="meta">${group.samples.length} supporting trace${group.samples.length === 1 ? '' : 's'}</span>`);
+  bits.push(`<span class="meta mono">active trace: ${escape(s.trace_id)}</span>`);
   if (m.role)  bits.push(`<span class="meta">role: ${escape(m.role)}</span>`);
   if (m.store) bits.push(`<span class="meta">store: ${escape(m.store)}</span>`);
   if (m.prompt_version) bits.push(`<span class="meta">prompt: ${escape(m.prompt_version)}</span>`);
@@ -482,11 +540,17 @@ function renderHeader() {
 
 function renderScenarioContext() {
   const el = document.getElementById('scenario-card');
+  const group = curScenario();
   const sample = curTrace();
-  if (!sample) { el.style.display = 'none'; return; }
-  const scenarioId = (sample.meta || {}).scenario_id;
+  if (!sample || !group) { el.style.display = 'none'; return; }
+  const scenarioId = group.scenarioId;
   const scenario = (state.context.scenarios || {})[scenarioId];
-  if (!scenario) { el.style.display = 'none'; return; }
+  if (!scenario) {
+    el.style.display = 'block';
+    el.innerHTML = `<strong>${escape(scenarioId)}</strong>` + renderTraceChoices(group);
+    renderScenarioNotes();
+    return;
+  }
   el.style.display = 'block';
   const questions = (scenario.messages || []).map((message, i) =>
     `<div class="question"><strong>${i ? `Follow-up ${i}` : 'Opening'}:</strong> ${escape(message)}</div>`
@@ -496,8 +560,71 @@ function renderScenarioContext() {
     questions +
     `<details><summary>Reveal expected outcome and evidence</summary>` +
     `<div class="expected"><strong>${escape(scenario.expected_outcome || 'human judgment')}</strong><br>` +
-    `${escape(scenario.expected || '')}<pre class="json">${escape(source)}</pre></div></details>`;
+    `${escape(scenario.expected || '')}<pre class="json">${escape(source)}</pre></div></details>` +
+    renderTraceChoices(group);
+  renderScenarioNotes();
 }
+
+function renderTraceChoices(group) {
+  if (!group || !group.samples.length) return '';
+  const active = state.activeTrace[group.key] || 0;
+  const buttons = group.samples.map((sample, index) => {
+    const tc = (state.context.traces || {})[sample.trace_id] || {};
+    const label = tc.turn_count > 1 ? `Turn ${tc.turn_index || index + 1}` : `Trace ${index + 1}`;
+    const retry = tc.is_retry ? ` · retry ${tc.attempt}` : '';
+    return `<button class="trace-choice ${index === active ? 'active' : ''}" data-trace-index="${index}" ` +
+      `title="${escape(sample.trace_id)}">${escape(label + retry)}</button>`;
+  }).join('');
+  return `<div class="scenario-tools"><span class="meta">Supporting evidence:</span>${buttons}</div>`;
+}
+
+function renderScenarioNotes() {
+  const el = document.getElementById('scenario-note');
+  const group = curScenario();
+  if (!group) { el.innerHTML = ''; return; }
+  const notes = state.annotations.filter(annotation =>
+    annotation.scenario_id === group.scenarioId &&
+    (!annotation.run_id || annotation.run_id === group.runId) &&
+    annotation.source === 'scenario_comment');
+  el.innerHTML = `<textarea id="scenario-note-input" placeholder="Add a comment about this scenario as a whole…"></textarea>` +
+    `<button id="save-scenario-note">Save scenario comment</button>` +
+    `<div class="scenario-note-list">${notes.map(note =>
+      `<div class="scenario-note-item">${escape(note.note || '')} ` +
+      `<button data-del-scenario-note="${escape(note.id)}">delete</button></div>`).join('')}</div>`;
+  document.getElementById('save-scenario-note').onclick = saveScenarioNote;
+  el.querySelectorAll('[data-del-scenario-note]').forEach(button =>
+    button.onclick = () => deleteAnnotation(button.dataset.delScenarioNote));
+}
+
+async function saveScenarioNote() {
+  const group = curScenario();
+  const sample = curTrace();
+  const input = document.getElementById('scenario-note-input');
+  const note = input ? input.value.trim() : '';
+  if (!group || !sample || !note) return;
+  state.annotations.push({
+    id: 's' + Date.now() + Math.floor(Math.random() * 1000),
+    scenario_id: group.scenarioId,
+    run_id: group.runId,
+    // Keep one evidence trace for compatibility with existing score exports.
+    trace_id: sample.trace_id,
+    note,
+    source: 'scenario_comment',
+    ts: new Date().toISOString(),
+  });
+  await saveAnnotations();
+  renderScenarioNotes();
+  updateCounts();
+  toast('scenario comment saved');
+}
+
+document.getElementById('scenario-card').addEventListener('click', event => {
+  const button = event.target.closest('[data-trace-index]');
+  const group = curScenario();
+  if (!button || !group) return;
+  state.activeTrace[group.key] = Number(button.dataset.traceIndex);
+  renderHeader(); renderScenarioContext(); renderTrace();
+});
 
 /* Render one trace as a sequence of steps. A tool_call and the tool_result
    that follows it are grouped into one .step container (common region). */
@@ -688,7 +815,7 @@ function layoutMargin() {
  * In-place annotation                                                *
  * ------------------------------------------------------------------ */
 let pendingRange = null;   // the wrapped pending-highlight span
-let pendingCtx = null;     // {trace_id, quote, idx}
+let pendingCtx = null;     // {trace_id, scenario_id, run_id, quote, idx}
 
 document.getElementById('trace-body').addEventListener('mouseup', () => {
   const sel = window.getSelection();
@@ -708,6 +835,8 @@ document.getElementById('trace-body').addEventListener('mouseup', () => {
   pendingRange = span;
   pendingCtx = {
     trace_id: curTrace().trace_id,
+    scenario_id: curScenario().scenarioId,
+    run_id: curScenario().runId,
     quote: text,
     idx: parseInt(anchor.dataset.idx, 10),
   };
@@ -750,6 +879,8 @@ async function commitAnnotation() {
   state.annotations.push({
     id: 'a' + Date.now() + Math.floor(Math.random() * 1000),
     trace_id: pendingCtx.trace_id,
+    scenario_id: pendingCtx.scenario_id,
+    run_id: pendingCtx.run_id,
     quote: pendingCtx.quote,
     idx: pendingCtx.idx,
     note, ts: new Date().toISOString(),
@@ -764,7 +895,7 @@ async function commitAnnotation() {
 async function deleteAnnotation(id) {
   state.annotations = state.annotations.filter(a => a.id !== id);
   await saveAnnotations();
-  renderTrace(); renderProgress();
+  renderTrace(); renderScenarioNotes(); renderProgress(); updateCounts();
 }
 
 /* Accepting a suggestion promotes it to a human-confirmed annotation with
@@ -775,6 +906,8 @@ async function acceptSuggestion(id) {
   state.annotations.push({
     id: 'a' + Date.now() + Math.floor(Math.random() * 1000),
     trace_id: s.trace_id, quote: s.quote, idx: s.idx,
+    scenario_id: (state.context.traces[s.trace_id] || {}).scenario_id,
+    run_id: (state.context.traces[s.trace_id] || {}).run_id,
     note: s.mode ? `[${s.mode}]` : '(accepted)',
     source: 'accepted_suggestion', mode: s.mode, ts: new Date().toISOString(),
   });
@@ -888,9 +1021,9 @@ function selectRun(runId, openTrace = false) {
 
 function renderRunFilter() {
   const select = document.getElementById('run-filter');
-  select.innerHTML = `<option value="">All traces</option>` + state.runs.map(run =>
+  select.innerHTML = `<option value="">All runs</option>` + state.runs.map(run =>
     `<option value="${escape(run.run_id)}" ${run.run_id === state.selectedRun ? 'selected' : ''}>` +
-    `${escape(run.name || run.run_id)} · ${run.trace_count || 0} traces</option>`).join('');
+    `${escape(run.name || run.run_id)} · ${run.scenario_count || 0} scenarios</option>`).join('');
 }
 
 function renderRuns() {
@@ -1049,34 +1182,36 @@ document.getElementById('map').addEventListener('click', (e) => {
  * Navigation + view switching                                        *
  * ------------------------------------------------------------------ */
 function gotoTrace(tid) {
-  let i = visibleSamples().findIndex(s => s.trace_id === tid);
+  let i = visibleScenarios().findIndex(group => group.samples.some(sample => sample.trace_id === tid));
   if (i < 0) {
     state.selectedRun = '';
     renderRunFilter();
-    i = visibleSamples().findIndex(s => s.trace_id === tid);
+    i = visibleScenarios().findIndex(group => group.samples.some(sample => sample.trace_id === tid));
   }
   if (i < 0) { toast('that trace is not in the current sample'); return; }
   state.cur = i;
+  const group = curScenario();
+  state.activeTrace[group.key] = group.samples.findIndex(sample => sample.trace_id === tid);
   switchView('trace');
   renderHeader(); renderScenarioContext(); renderTrace(); updatePos();
 }
 function updatePos() {
   document.getElementById('pos').textContent =
-    visibleSamples().length ? `${state.cur + 1} / ${visibleSamples().length}` : '0 / 0';
+    visibleScenarios().length ? `${state.cur + 1} / ${visibleScenarios().length} scenarios` : '0 / 0 scenarios';
 }
 document.getElementById('prev').onclick = () => {
   if (state.cur > 0) { state.cur--; renderHeader(); renderScenarioContext(); renderTrace(); updatePos(); }
 };
 document.getElementById('next').onclick = () => {
-  if (state.cur < visibleSamples().length - 1) { state.cur++; renderHeader(); renderScenarioContext(); renderTrace(); updatePos(); }
+  if (state.cur < visibleScenarios().length - 1) { state.cur++; renderHeader(); renderScenarioContext(); renderTrace(); updatePos(); }
 };
 document.getElementById('trace-search').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   const query = e.target.value.trim().toLowerCase();
-  const index = visibleSamples().findIndex(sample =>
-    sample.trace_id.toLowerCase().includes(query) ||
-    String((sample.meta || {}).scenario_id || '').toLowerCase().includes(query));
-  if (index < 0) { toast('no selected trace matches that id'); return; }
+  const index = visibleScenarios().findIndex(group =>
+    group.scenarioId.toLowerCase().includes(query) ||
+    group.samples.some(sample => sample.trace_id.toLowerCase().includes(query)));
+  if (index < 0) { toast('no scenario or supporting trace matches that id'); return; }
   state.cur = index; switchView('trace');
   renderHeader(); renderScenarioContext(); renderTrace(); updatePos();
 });
@@ -1102,17 +1237,22 @@ document.querySelectorAll('.views button').forEach(b =>
   b.onclick = () => switchView(b.dataset.view));
 
 function updateCounts() {
+  const scenarioCount = visibleScenarios().length;
+  const traceCount = visibleSamples().length;
   document.getElementById('counts').textContent =
-    `${visibleSamples().length}/${state.samples.length} traces · ${state.annotations.length} notes · ` +
+    `${scenarioCount} scenarios · ${traceCount} supporting traces · ${state.annotations.length} notes · ` +
     `${normalizePatterns(state.patterns).length} modes · ${state.suggestions.length} suggestions`;
 }
 
 /* ------------------------------------------------------------------ *
  * Structured labels: activated only after human-authored modes exist. *
  * ------------------------------------------------------------------ */
-function structuredDecision(traceId, mode) {
+function structuredDecision(group, mode) {
+  const traceIds = new Set(group.samples.map(sample => sample.trace_id));
   const matches = state.annotations.filter(a =>
-    a.trace_id === traceId && a.mode === mode && (a.label === 0 || a.label === 1));
+    (a.scenario_id === group.scenarioId || traceIds.has(a.trace_id)) &&
+    (!a.run_id || a.run_id === group.runId) &&
+    a.mode === mode && (a.label === 0 || a.label === 1));
   return matches.length ? matches[matches.length - 1] : null;
 }
 
@@ -1124,28 +1264,28 @@ function renderLabels() {
     return;
   }
   const head = modes.map(mode => `<th>${escape(mode.name)}</th>`).join('');
-  const rows = visibleSamples().map(sample => {
+  const rows = visibleScenarios().map(group => {
+    const sample = group.samples[0];
     const cells = modes.map(mode => {
-      const current = structuredDecision(sample.trace_id, mode.name);
-      return `<td><div class="label-toggle" data-trace="${escape(sample.trace_id)}" data-mode="${escape(mode.name)}">` +
+      const current = structuredDecision(group, mode.name);
+      return `<td><div class="label-toggle" data-trace="${escape(sample.trace_id)}" data-scenario="${escape(group.scenarioId)}" data-run="${escape(group.runId)}" data-mode="${escape(mode.name)}">` +
         `<button data-label="0" class="${current && current.label === 0 ? 'active-pass' : ''}">absent</button>` +
         `<button data-label="1" class="${current && current.label === 1 ? 'active-fail' : ''}">present</button></div></td>`;
     }).join('');
-    const sid = (sample.meta || {}).scenario_id || '';
-    return `<tr><td><button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape(sid || clip(sample.trace_id, 12))}</button></td>${cells}</tr>`;
+    return `<tr><td><button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape(group.scenarioId)}</button></td>${cells}</tr>`;
   }).join('');
-  el.innerHTML = `<div class="label-table-wrap"><table class="label-table"><thead><tr><th>trace</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  el.innerHTML = `<div class="label-table-wrap"><table class="label-table"><thead><tr><th>scenario</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
   el.querySelectorAll('.open-trace').forEach(button => button.onclick = () => gotoTrace(button.dataset.tid));
   el.querySelectorAll('.label-toggle button').forEach(button => button.onclick = () => {
     const group = button.closest('.label-toggle');
-    saveStructuredLabel(group.dataset.trace, group.dataset.mode, Number(button.dataset.label));
+    saveStructuredLabel(group.dataset.trace, group.dataset.scenario, group.dataset.run, group.dataset.mode, Number(button.dataset.label));
   });
 }
 
-async function saveStructuredLabel(traceId, mode, label) {
+async function saveStructuredLabel(traceId, scenarioId, runId, mode, label) {
   state.annotations.push({
     id: 'l' + Date.now() + Math.floor(Math.random() * 1000),
-    trace_id: traceId, mode, label,
+    trace_id: traceId, scenario_id: scenarioId, run_id: runId, mode, label,
     note: label ? `${mode} present` : `${mode} absent`,
     source: 'human_structured_label', ts: new Date().toISOString(),
   });
@@ -1204,7 +1344,7 @@ async function poll() {
     state.sync = sync && typeof sync === 'object' ? sync : state.sync;
     state.context = context && context.scenarios ? context : state.context;
     state.graph = graph && graph.nodes ? graph : state.graph;
-    if (state.cur >= visibleSamples().length) state.cur = Math.max(0, visibleSamples().length - 1);
+    if (state.cur >= visibleScenarios().length) state.cur = Math.max(0, visibleScenarios().length - 1);
 
     if (grewSamples) toast(`new traces added to your batch (${newSampleCount})`);
     if (grewSugg) toast(`new agent suggestions to review (${newSuggCount})`);
