@@ -35,3 +35,14 @@ def test_large_trace_payloads_are_gzipped_for_the_browser() -> None:
 
     assert compressed is True
     assert json.loads(gzip.decompress(body)) == payload
+
+
+def test_timeline_distinguishes_model_tools_summary_and_answer() -> None:
+    html = UI.read_text()
+
+    assert "Model decision" in html
+    assert "Published reasoning summary" in html
+    assert "Tool call" in html
+    assert "Tool output" in html
+    assert "Final answer" in html
+    assert "Provider-published summary — not raw chain-of-thought" in html

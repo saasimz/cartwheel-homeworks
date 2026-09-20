@@ -73,6 +73,40 @@ def _message_text(value: Any) -> str:
     return _text(value)
 
 
+def _reasoning_summaries(value: Any) -> list[str]:
+    """Extract only provider-published reasoning summaries.
+
+    Raw reasoning tokens and encrypted reasoning are intentionally ignored.
+    A review UI may display a provider's explicit summary, but it must never
+    relabel opaque/private chain-of-thought as observable evidence.
+    """
+    value = _data(value)
+    if isinstance(value, list):
+        summaries: list[str] = []
+        for item in value:
+            summaries.extend(_reasoning_summaries(item))
+        return summaries
+    if not isinstance(value, dict):
+        return []
+    if str(value.get("type") or "").lower() == "reasoning":
+        summary = _data(value.get("summary"))
+        parts = summary if isinstance(summary, list) else [summary]
+        return [
+            text
+            for part in parts
+            if isinstance(part, (dict, str))
+            and (text := _message_text(part)).strip()
+        ]
+    summaries = []
+    # Provider wrappers commonly nest response items under these keys. Keep
+    # the traversal narrow so ordinary fields named "reason" are not mistaken
+    # for a model-generated reasoning summary.
+    for key in ("output", "items", "response"):
+        if key in value:
+            summaries.extend(_reasoning_summaries(value[key]))
+    return summaries
+
+
 def _timestamp(value: Any) -> str | None:
     """Return an ISO timestamp without dropping an existing string value."""
     if value is None:
@@ -219,6 +253,15 @@ def _observation_message(observation: Any) -> list[dict[str, Any]]:
                 "model_call": record,
             }
         )
+        for summary in _reasoning_summaries(out):
+            messages.append(
+                {
+                    "role": "reasoning_summary",
+                    "label": "published reasoning summary",
+                    "text": summary,
+                    "observation_id": record.get("id"),
+                }
+            )
     elif out is not None:
         messages.append({"role": "observation", "label": name, "text": _text(out)})
     return messages

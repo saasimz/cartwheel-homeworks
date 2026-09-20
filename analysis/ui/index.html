@@ -149,6 +149,13 @@
   .msg[data-role="observation"] .role { color: var(--role-retrieval); }
   .msg[data-role="model_call"]  { border-left-color: var(--role-model); }
   .msg[data-role="model_call"] .role { color: var(--role-model); }
+  .msg[data-role="user"] { background: #eff6ff; }
+  .msg[data-role="model_call"] { background: #f5f3ff; }
+  .msg[data-role="reasoning_summary"] { border-left-color: #ea580c; background: #fff7ed; }
+  .msg[data-role="reasoning_summary"] .role { color: #c2410c; }
+  .msg[data-role="tool_call"] { background: #ecfeff; }
+  .msg[data-role="tool_result"] { background: #f0fdf4; }
+  .msg[data-role="assistant"] { background: #fdf2f8; }
   .msg.boiler { opacity: .5; }                /* identical-across-traces content */
 
   .msg .text { white-space: pre-wrap; word-wrap: break-word; }
@@ -320,6 +327,15 @@
   .sync-status { color: var(--muted); font-size: 11px; max-width: 210px; }
   .model-flow { font-family: ui-monospace, monospace; color: var(--role-model);
                 font-size: 12px; margin: 4px 0; }
+  .flow-legend { display: flex; flex-wrap: wrap; gap: 7px; max-width: 980px;
+                 margin: 0 auto 12px; font-size: 11px; color: var(--muted); }
+  .flow-key { border: 1px solid var(--line); border-left-width: 4px;
+              border-radius: 5px; padding: 4px 7px; }
+  .flow-key.model { background: #f5f3ff; border-left-color: var(--role-model); }
+  .flow-key.reasoning { background: #fff7ed; border-left-color: #ea580c; }
+  .flow-key.tool-call { background: #ecfeff; border-left-color: var(--role-tool-call); }
+  .flow-key.tool-result { background: #f0fdf4; border-left-color: var(--role-tool-result); }
+  .flow-key.answer { background: #fdf2f8; border-left-color: var(--role-assistant); }
 </style>
 </head>
 <body>
@@ -350,6 +366,13 @@
   <div class="trace-header" id="trace-header"></div>
   <div class="scenario-card" id="scenario-card"></div>
   <div class="scenario-note" id="scenario-note"></div>
+  <div class="flow-legend">
+    <span class="flow-key model">Model decision</span>
+    <span class="flow-key reasoning">Published reasoning summary</span>
+    <span class="flow-key tool-call">Tool call</span>
+    <span class="flow-key tool-result">Tool output</span>
+    <span class="flow-key answer">Final answer</span>
+  </div>
   <div class="trace-body-wrap">
     <div class="trace-body" id="trace-body"></div>
     <div class="margin-col" id="margin-col"></div>
@@ -635,13 +658,18 @@ function renderTrace() {
   const html = [];
   let i = 0;
   const msgs = s.trace;
+  let toolResultSeen = false;
   while (i < msgs.length) {
-    const m = msgs[i];
+    let m = msgs[i];
+    if (m.role === 'model_call') {
+      m = {...m, label: toolResultSeen ? 'model · answer synthesis' : 'model · tool decision'};
+    }
     if (m.role === 'tool_call') {
       // group this call with an immediately-following result
       const parts = [renderMsg(m, i)];
       if (i + 1 < msgs.length && msgs[i + 1].role === 'tool_result') {
         parts.push(renderMsg(msgs[i + 1], i + 1));
+        toolResultSeen = true;
         i++;
       }
       html.push(`<div class="step">${parts.join('')}</div>`);
@@ -697,6 +725,9 @@ function renderMsg(m, idx) {
         parent_observation_id: call.parent_observation_id,
       }))}</pre></details>` +
       `<details class="args"><summary>raw metadata</summary><pre class="json">${escape(pretty(call.metadata || {}))}</pre></details>`;
+  } else if (role === 'reasoning_summary') {
+    inner = `<div class="model-flow">Provider-published summary — not raw chain-of-thought</div>` +
+      `<div class="text annotatable" data-idx="${idx}">${escape(m.text || '')}</div>`;
   } else {
     const text = m.text !== undefined ? m.text : pretty(m.content);
     inner = `<div class="text annotatable" data-idx="${idx}">${escape(text)}</div>`;

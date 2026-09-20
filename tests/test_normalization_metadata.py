@@ -68,3 +68,38 @@ def test_model_spans_and_run_id_are_preserved_for_trace_lab() -> None:
     assert model_message["model_call"]["parent_observation_id"] == "agent-1"
     attrs = model_message["model_call"]["metadata"]["attributes"]
     assert attrs["authorization"] == "[redacted]"
+
+
+def test_only_published_reasoning_summary_is_added_to_timeline() -> None:
+    trace = normalize_trace(
+        {
+            "id": "trace-reasoning",
+            "input": "Can I cancel order 10?",
+            "output": "It can be cancelled.",
+            "observations": [
+                {
+                    "id": "generation-reasoning",
+                    "type": "GENERATION",
+                    "name": "openai.response",
+                    "output": {
+                        "output": [
+                            {
+                                "type": "reasoning",
+                                "summary": [
+                                    {
+                                        "type": "summary_text",
+                                        "text": "I checked the order state before deciding.",
+                                    }
+                                ],
+                                "encrypted_content": "private-reasoning-must-not-render",
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+
+    summary = next(row for row in trace["trace"] if row["role"] == "reasoning_summary")
+    assert summary["text"] == "I checked the order state before deciding."
+    assert "private-reasoning-must-not-render" not in summary["text"]
