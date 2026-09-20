@@ -1,6 +1,10 @@
 """Static guardrails for the scenario-centered Trace Lab review workflow."""
 
+import gzip
+import json
 from pathlib import Path
+
+from analysis.server import _json_response
 
 
 UI = Path(__file__).parents[1] / "analysis" / "ui" / "index.html"
@@ -22,3 +26,12 @@ def test_annotations_carry_scenario_and_run_identity() -> None:
     assert "run_id: pendingCtx.run_id" in html
     assert "source: 'scenario_comment'" in html
     assert "Save scenario comment" in html
+
+
+def test_large_trace_payloads_are_gzipped_for_the_browser() -> None:
+    payload = [{"trace": "evidence" * 500}]
+
+    body, compressed = _json_response(payload, "br, gzip, deflate")
+
+    assert compressed is True
+    assert json.loads(gzip.decompress(body)) == payload

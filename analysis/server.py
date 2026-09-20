@@ -44,6 +44,7 @@ committed with the repo.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import re
@@ -108,6 +109,17 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _json_response(data: Any, accept_encoding: str = "") -> tuple[bytes, bool]:
+    """Serialize an API response and compress large payloads when supported.
+
+    Trace samples can exceed ten megabytes. Gzip keeps the complete evidence
+    set while avoiding slow or reset SSH-tunnel transfers in the local UI.
+    """
+    body = json.dumps(data).encode()
+    should_compress = len(body) >= 1024 and "gzip" in accept_encoding.lower()
+    return (gzip.compress(body, compresslevel=5), True) if should_compress else (body, False)
+
+
 def _write_json(path: Path, data: Any) -> None:
     """Write ``data`` to ``path`` atomically (write temp, then replace)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,9 +138,12 @@ class ReviewHandler(BaseHTTPRequestHandler):
     # -- helpers ----------------------------------------------------------
 
     def _send_json(self, data: Any, status: int = 200) -> None:
-        body = json.dumps(data).encode()
+        body, compressed = _json_response(data, self.headers.get("Accept-Encoding", ""))
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         # Local single-user tool; permissive CORS keeps a file:// or
         # different-port UI from tripping over the browser same-origin check.
