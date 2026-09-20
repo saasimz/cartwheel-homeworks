@@ -46,3 +46,11 @@ def test_timeline_distinguishes_model_tools_summary_and_answer() -> None:
     assert "Tool output" in html
     assert "Final answer" in html
     assert "Provider-published summary — not raw chain-of-thought" in html
+
+
+def test_browser_retries_tunneled_api_reads_without_blanking_all_state() -> None:
+    html = UI.read_text()
+
+    assert "for (let attempt = 0; attempt < 3; attempt++)" in html
+    assert "const safe = (path, fallback)" in html
+    assert "some TraceLab data could not be loaded" in html
