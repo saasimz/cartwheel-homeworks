@@ -273,6 +273,7 @@ class TraceSync:
             _state.write_json(_state.state_path("graph.json"), _projection(samples))
             return self._status(
                 in_progress=False,
+                message="Langfuse synchronization completed",
                 last_success_at=_utcnow(),
                 added=added,
                 updated=updated,

@@ -350,6 +350,7 @@
 <div id="models-view" class="view">
   <div class="section-title">Model calls</div>
   <div id="model-stats" class="model-stats"></div>
+  <div class="queue-tools"><button id="model-prev">Previous</button><span id="model-page" class="card-meta"></span><button id="model-next">Next</button></div>
   <div id="model-grid" class="model-grid"></div>
 </div>
 
@@ -394,6 +395,7 @@ const state = {
   runs: [],
   sync: {enabled: false, in_progress: false},
   selectedRun: new URLSearchParams(window.location.search).get('run') || '',
+  modelPage: 0,
   cur: 0,            // index into samples
 };
 
@@ -875,6 +877,7 @@ async function bulkQueue(accept) {
 function selectRun(runId, openTrace = false) {
   state.selectedRun = runId || '';
   state.cur = 0;
+  state.modelPage = 0;
   const url = new URL(window.location.href);
   state.selectedRun ? url.searchParams.set('run', state.selectedRun) : url.searchParams.delete('run');
   history.replaceState({}, '', url);
@@ -922,6 +925,10 @@ function numeric(obj, keys) {
 function renderModels() {
   const samples = visibleSamples();
   const calls = samples.flatMap(sample => modelMessages(sample).map(message => ({sample, message, call: message.model_call || {}})));
+  const pageSize = 100;
+  const pageCount = Math.max(1, Math.ceil(calls.length / pageSize));
+  state.modelPage = Math.min(state.modelPage, pageCount - 1);
+  const pageCalls = calls.slice(state.modelPage * pageSize, (state.modelPage + 1) * pageSize);
   const inputTokens = calls.reduce((sum, item) => sum + numeric(item.call.usage_details, ['input', 'input_tokens', 'prompt_tokens']), 0);
   const outputTokens = calls.reduce((sum, item) => sum + numeric(item.call.usage_details, ['output', 'output_tokens', 'completion_tokens']), 0);
   const cost = calls.reduce((sum, item) => sum + numeric(item.call, ['total_cost']), 0);
@@ -932,11 +939,16 @@ function renderModels() {
     ['errors', errors],
   ].map(([label, value]) => `<div class="stat"><strong>${escape(value)}</strong>${escape(label)}</div>`).join('');
   const el = document.getElementById('model-grid');
+  document.getElementById('model-page').textContent = calls.length
+    ? `Page ${state.modelPage + 1} of ${pageCount} · ${calls.length} calls`
+    : 'No model calls';
+  document.getElementById('model-prev').disabled = state.modelPage === 0;
+  document.getElementById('model-next').disabled = state.modelPage >= pageCount - 1;
   if (!calls.length) {
     el.innerHTML = '<div class="empty">No model spans were published for the selected run. Tool and final-output traces remain available in Trace view.</div>';
     return;
   }
-  el.innerHTML = calls.map(({sample, message, call}) => {
+  el.innerHTML = pageCalls.map(({sample, message, call}) => {
     const usage = call.usage_details || {};
     return `<div class="model-card"><div class="card-head">` +
       `<button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape((sample.meta || {}).scenario_id || clip(sample.trace_id, 12))}</button>` +
@@ -966,6 +978,12 @@ function renderSyncStatus() {
 }
 
 document.getElementById('run-filter').onchange = event => selectRun(event.target.value);
+document.getElementById('model-prev').onclick = () => {
+  if (state.modelPage > 0) { state.modelPage--; renderModels(); }
+};
+document.getElementById('model-next').onclick = () => {
+  state.modelPage++; renderModels();
+};
 document.getElementById('sync-now').onclick = async () => {
   try {
     const result = await api.post('/api/sync', {});
@@ -1141,13 +1159,22 @@ async function saveStructuredLabel(traceId, mode, label) {
  * replayed annotations. Compare-and-render, ~2s, like the watcher.   *
  * ------------------------------------------------------------------ */
 let lastSig = '';
+let pollNumber = 0;
 async function poll() {
   try {
-    const [samples, suggestions, patterns, annotations, runs, sync, context, graph] = await Promise.all([
-      api.get('/api/samples'), api.get('/api/suggestions'),
-      api.get('/api/patterns'), api.get('/api/annotations'),
-      api.get('/api/runs'), api.get('/api/sync-status'), api.get('/api/context'), api.get('/api/graph'),
+    const [suggestions, patterns, annotations, runs, sync] = await Promise.all([
+      api.get('/api/suggestions'), api.get('/api/patterns'),
+      api.get('/api/annotations'), api.get('/api/runs'), api.get('/api/sync-status'),
     ]);
+    pollNumber++;
+    const syncChanged = Boolean(sync && sync.last_success_at && sync.last_success_at !== state.sync.last_success_at);
+    const refreshHeavy = syncChanged || pollNumber % 15 === 0;
+    let samples = state.samples, context = state.context, graph = state.graph;
+    if (refreshHeavy) {
+      [samples, context, graph] = await Promise.all([
+        api.get('/api/samples'), api.get('/api/context'), api.get('/api/graph'),
+      ]);
+    }
     const newSampleCount = Array.isArray(samples) ? samples.length : 0;
     const grewSamples = newSampleCount > state.samples.length;
     const newSuggCount = Array.isArray(suggestions) ? suggestions.length : 0;
@@ -1164,7 +1191,8 @@ async function poll() {
 
     const sig = JSON.stringify([newSampleCount, newSuggCount,
       normalizePatterns(patterns).length, merged.length, (runs || []).length,
-      sync && sync.last_success_at, sync && sync.in_progress]);
+      sync && sync.last_success_at, sync && sync.in_progress, sync && sync.error,
+      refreshHeavy ? pollNumber : 0]);
     if (sig === lastSig) return;
     lastSig = sig;
 
