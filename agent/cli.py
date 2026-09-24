@@ -43,7 +43,7 @@ from agents.items import RunItem
 from opentelemetry import trace
 
 from agent import db
-from agent.agent import build_agent, prompt_version, render_system_prompt
+from agent.agent import build_agent, prompt_version
 from agent.auth import AuthContext
 from agent.config import REPO_ROOT
 from agent.conversation_logger import append_terminal_record
@@ -99,18 +99,23 @@ def resolve_auth(role: str, user_id: int | None) -> AuthContext:
     return AuthContext(user_id=user.id, role=user.role, store_id=user.store_id)
 
 
-def _ask_is_failure() -> bool | None:
+def _ask_is_failure() -> bool | None | str:
     """Ask for the user's assessment without trying to infer a cause."""
     while True:
         try:
             answer = input("Mark this response as a failure? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, StopIteration):
+            # Automated callers may provide a finite input iterator containing
+            # only chat messages. Exhaustion means no human assessment was
+            # supplied; it should not turn a successful chat into a failure.
             print()
             return None
         if answer in {"", "n", "no"}:
             return False
         if answer in {"y", "yes"}:
             return True
+        if answer in {"quit", "exit"}:
+            return "quit"
         print("Please enter 'y' or 'n'.")
 
 
@@ -134,7 +139,9 @@ async def chat(
     run_config = RunConfig(tracing_disabled=not tracing)
     session_id = f"cli-{ctx.role}-{ctx.user_id}-{int(time.time())}"
     session = SQLiteSession(session_id, str(SESSIONS_DB))
-    version = prompt_version(render_system_prompt(ctx))
+    # Prompt versions identify the shared template, not one user's rendered
+    # identity block, so traces remain comparable across authenticated users.
+    version = prompt_version()
     turn_number = 0
     print(
         f"Cartwheel support CLI | role={ctx.role} user={ctx.user_id} "
@@ -144,7 +151,7 @@ async def chat(
     while True:
         try:
             line = input(f"{ctx.role}> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, StopIteration):
             print()
             return
         if not line:
@@ -223,7 +230,10 @@ async def chat(
         if debug:
             _print_tool_calls(result.new_items)
         print(f"\nagent> {result.final_output}\n")
-        is_failure = _ask_is_failure()
+        assessment = _ask_is_failure()
+        if assessment == "quit":
+            return
+        is_failure = assessment
         if is_failure:
             # The independent file is a failure register, so successful and
             # unassessed turns should leave no record in it.
