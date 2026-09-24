@@ -41,6 +41,7 @@ def test_model_spans_and_run_id_are_preserved_for_trace_lab() -> None:
                 "attributes": {
                     "cartwheel.scenario_id": "support-0001",
                     "cartwheel.run_id": "run-one",
+                    "cartwheel.session_id": "session-one",
                 }
             },
             "observations": [
@@ -63,6 +64,7 @@ def test_model_spans_and_run_id_are_preserved_for_trace_lab() -> None:
         }
     )
     assert trace["meta"]["run_id"] == "run-one"
+    assert trace["meta"]["session_id"] == "session-one"
     model_message = next(row for row in trace["trace"] if row["role"] == "model_call")
     assert model_message["model_call"]["model"] == "gpt-5.5"
     assert model_message["model_call"]["parent_observation_id"] == "agent-1"

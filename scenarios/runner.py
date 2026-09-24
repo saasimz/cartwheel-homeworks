@@ -76,8 +76,10 @@ def run_scenario(
     user_id = tuple_.get("user_id", DEFAULT_USERS.get(role, 1))
     turns: list[dict[str, str]] = []
     started = time.time()
+    session_id: str | None = None
     try:
         session = _post(f"{base_url}/sessions", {"user_id": user_id, "role": role})
+        session_id = str(session["session_id"])
         messages = [scenario["opening_message"]]
         followups = scenario.get("followups") or []
         # Every followup is an exact user utterance. The scenario skill forbids
@@ -85,7 +87,7 @@ def run_scenario(
         messages.extend(followups[: MAX_TURNS_PER_SCENARIO - 1])
         for message in messages:
             reply = _post(
-                f"{base_url}/sessions/{session['session_id']}/messages",
+                f"{base_url}/sessions/{session_id}/messages",
                 {
                     "message": message,
                     "model": model,
@@ -102,6 +104,7 @@ def run_scenario(
         error = str(exc)
     return {
         "scenario_id": scenario["id"],
+        "session_id": session_id,
         "run_id": run_id,
         "scenario_group": scenario["scenario_group"],
         "model": model,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from scenarios import runner
 from scenarios.runner import load_results, plan_run, resolve_run_id
 
 
@@ -66,3 +67,26 @@ def test_resume_reuses_the_existing_run_id() -> None:
 
 def test_new_run_id_is_readable_and_nonempty() -> None:
     assert resolve_run_id(None, {}).startswith("run-")
+
+
+def test_run_scenario_persists_server_session_id(monkeypatch) -> None:
+    calls: list[tuple[str, dict, str | None]] = []
+
+    def fake_post(url: str, body: dict, token: str | None = None) -> dict:
+        calls.append((url, body, token))
+        if url.endswith("/sessions"):
+            return {"session_id": "session-123", "token": "signed-token"}
+        assert url.endswith("/sessions/session-123/messages")
+        return {"reply": "Done."}
+
+    monkeypatch.setattr(runner, "_post", fake_post)
+    result = runner.run_scenario(
+        _scenario("support-0001"),
+        "http://localhost:8010",
+        "gpt-5.5",
+        run_id="run-one",
+    )
+
+    assert result["status"] == "completed"
+    assert result["session_id"] == "session-123"
+    assert calls[1][2] == "signed-token"

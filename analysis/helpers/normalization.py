@@ -411,6 +411,10 @@ def normalize_trace(value: Any) -> dict[str, Any]:
     meta = {
         "role": metadata.get("cartwheel.user_role") or metadata.get("role"),
         "store": metadata.get("cartwheel.store_id") or metadata.get("store_id"),
+        # The server owns this identifier. Keeping it as trace metadata lets
+        # reviewers group turns without exposing infrastructure IDs to the model.
+        "session_id": metadata.get("cartwheel.session_id")
+        or metadata.get("session_id"),
         "prompt_version": metadata.get("cartwheel.prompt_version")
         or metadata.get("prompt_version"),
         "scenario_id": raw.get("cartwheel_scenario_id")
