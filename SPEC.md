@@ -109,3 +109,11 @@ Requirements that do not fit in the sections above, including tone and style gui
 - **RESP-3.** State when required information is missing or inconsistent, rather than inventing a value.
 - **RESP-4.** Explain refusals and escalations without revealing inaccessible order or user information.
 - **RESP-5.** Use direct and respectful language that explains the relevant decision.
+- **RESP-6.** When a refund request explicitly specifies a nonpositive amount, reject the
+  request before retrieving the order or invoking the refund tool. Explain that the amount
+  must be positive. This response-level check does not replace the deterministic
+  `issue_refund` validation, which must continue returning `invalid_argument` if it receives
+  a nonpositive amount.
+- **RESP-7.** Present policy citations as verified public-facing links rather than exposing
+  internal policy identifiers. Use only URLs returned by the policy tools; never invent a
+  policy URL. If no public URL is available, state that the source link is unavailable.

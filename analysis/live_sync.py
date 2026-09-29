@@ -178,6 +178,10 @@ def update_context(samples: list[dict[str, Any]]) -> dict[str, Any]:
         traces[trace_id] = {
             **old,
             "scenario_id": (sample.get("meta") or {}).get("scenario_id"),
+            # The UI groups new multi-turn conversations by the server-owned
+            # session id. Historical traces intentionally leave this empty so
+            # the browser can mark its scenario grouping as inferred.
+            "session_id": (sample.get("meta") or {}).get("session_id"),
             "run_id": run_id,
             "run_inferred": inferred,
             "timestamp": sample.get("timestamp"),

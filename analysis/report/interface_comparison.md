@@ -1,5 +1,20 @@
 # Cartwheel Trace Lab interface comparison
 
+The submitted Homework 4 interface lives under `analysis/review_app/` and
+reuses the file-backed API from `analysis/server.py`. This preserves the
+existing review state and synchronization contract while making the adapted
+interface, rather than the supplied reference page, the submitted artifact.
+
+## Preliminary Langfuse review
+
+The preliminary review covered Support 0201, 0241, 0247, 0249, and 0250.
+Langfuse preserved the evidence, but comparing a final answer with several
+tool inputs and outputs required opening separated observations. A multi-turn
+scenario also appeared as several top-level traces, making a user's correction
+difficult to evaluate without manually moving between turns. These findings
+motivated one chronological conversation timeline, explicit model/tool/result
+styling, and an always-visible annotation surface.
+
 ## Reference design retained
 
 The customized interface retains the reference trace timeline and its visual
@@ -10,20 +25,22 @@ underlying tool evidence more prominent than a model-written summary.
 
 ## Adaptation for observed Cartwheel traces
 
-The pilot run showed that one scenario may produce multiple Langfuse traces,
-one per conversation turn, and that retries may produce another trace for the
-same turn. Cartwheel Trace Lab therefore joins every trace to its
-`cartwheel.scenario_id`, shows turn and retry badges, lists observed models and
-tools in the header, and provides the exact scenario conversation above the
-timeline. The expected outcome and its evidence source are available only in a
-collapsed panel so the reviewer can inspect the behavior before seeing the
-answer key. A preparation command creates a diverse sample, a reproducible
-manifest, scenario context, and a PCA map from the real Langfuse export.
+The pilot run showed that one conversation may produce multiple Langfuse
+traces, one per user turn, and that retries may produce another trace for the
+same turn. Cartwheel Trace Lab therefore groups new traces by the server-owned
+`cartwheel.session_id` and orders their turns chronologically. Historical
+traces that predate this attribute use a visibly labelled `run_id +
+scenario_id` fallback; the UI never presents that inference as an observed
+session. Turn and retry badges, observed models, and tools remain visible in
+the header, while the exact scenario conversation appears above the timeline.
+The expected outcome and its evidence source stay collapsed so the reviewer
+can inspect behavior before seeing the answer key.
 
-The fourth structured-labeling view was also added. It remains empty until the
-human-authored taxonomy has modes; afterward, present/absent decisions are
-saved locally as append-only JSONL histories and synchronized to Langfuse
-scores when Langfuse is configured.
+The structured-labeling view remains empty until the human-authored taxonomy
+has modes; afterward, it requires one present/absent decision for every trace
+and final mode. The Progress view reports reviewed traces and missing
+trace-mode judgments. Decisions are saved locally as append-only JSONL
+histories and synchronized to Langfuse scores when Langfuse is configured.
 
 ## Automatic Langfuse synchronization
 
@@ -121,7 +138,6 @@ mistaken for a missing trace span.
 
 The browser shows observable model inputs, tool choices, tool results, and
 assistant outputs, but it cannot show private model chain-of-thought. It also
-groups turns through scenario metadata rather than reconstructing a single
-provider-native conversation object. The turn and retry badges make that
-boundary explicit, but a future version could add a scenario-level timeline
-that renders all turn traces on one page.
+cannot recover true session boundaries for the 507 historical traces because
+those traces were recorded before `cartwheel.session_id` instrumentation was
+added. Their legacy grouping remains explicitly marked as inferred.

@@ -70,6 +70,7 @@ def test_sync_writes_trace_indexes_without_touching_annotations(tmp_path, monkey
             "attributes": {
                 "cartwheel.scenario_id": "support-0001",
                 "cartwheel.run_id": "run-one",
+                "cartwheel.session_id": "session-one",
             }
         },
         "observations": [],
@@ -91,3 +92,5 @@ def test_sync_writes_trace_indexes_without_touching_annotations(tmp_path, monkey
     assert json.loads((tmp_path / "annotations.json").read_text()) == annotations
     assert json.loads((tmp_path / "runs.json").read_text())[0]["run_id"] == "run-one"
     assert json.loads((tmp_path / "samples.json").read_text())[0]["trace_id"] == "trace-1"
+    context = json.loads((tmp_path / "scenario_context.json").read_text())
+    assert context["traces"]["trace-1"]["session_id"] == "session-one"

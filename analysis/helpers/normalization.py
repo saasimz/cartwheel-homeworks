@@ -458,25 +458,43 @@ def normalize_trace(value: Any) -> dict[str, Any]:
 
 
 def _merge_multi_turn(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge traces that share a scenario_id into one conversation."""
+    """Merge turns by server session, with a labelled legacy fallback.
+
+    New Cartwheel traces carry ``cartwheel.session_id`` and that server-owned
+    identifier is the only reliable conversation boundary.  Historical
+    Module 1 traces predate the attribute, so they fall back to run plus
+    scenario rather than silently mixing repeated scenario runs together.
+    """
     from collections import defaultdict
 
-    by_scenario: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    no_scenario: list[dict[str, Any]] = []
+    by_conversation: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    ungrouped: list[dict[str, Any]] = []
     for trace in traces:
-        sid = trace["meta"].get("scenario_id")
-        if sid:
-            by_scenario[sid].append(trace)
+        meta = trace["meta"]
+        session_id = meta.get("session_id")
+        scenario_id = meta.get("scenario_id")
+        run_id = meta.get("run_id") or "legacy"
+        if session_id:
+            by_conversation[("session", str(session_id), "")].append(trace)
+        elif scenario_id:
+            by_conversation[("legacy", str(run_id), str(scenario_id))].append(trace)
         else:
-            no_scenario.append(trace)
+            ungrouped.append(trace)
 
-    merged: list[dict[str, Any]] = list(no_scenario)
-    for sid, group in by_scenario.items():
+    merged: list[dict[str, Any]] = list(ungrouped)
+    for key, group in by_conversation.items():
         if len(group) == 1:
+            group[0]["meta"]["session_inferred"] = key[0] == "legacy"
             merged.append(group[0])
             continue
         group.sort(key=lambda t: t.get("timestamp") or "")
         first = dict(group[0])
+        first["meta"] = dict(first["meta"])
+        first["features"] = dict(first["features"])
+        first["trace"] = list(first["trace"])
+        first["observations"] = list(first["observations"])
+        first["models"] = list(first["models"])
+        first["meta"]["session_inferred"] = key[0] == "legacy"
         for later in group[1:]:
             first["trace"].extend(later["trace"])
             first["observations"].extend(later["observations"])

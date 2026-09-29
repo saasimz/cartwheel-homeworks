@@ -1,0 +1,1516 @@
+<!DOCTYPE html>
+<!--
+  Cartwheel Trace Lab: customized error-analysis review interface.
+
+  Adapted from the instructor's error-discovery skill. A single self-contained
+  file, served by analysis/server.py, that renders Cartwheel agent traces for
+  reading and annotation. Four views:
+
+    scenario  review one scenario at a time, with its traces nested as evidence
+    map       a 2D projection of the whole store, clusters + sampled + annotated
+    progress  the failure-mode treemap and the agent-suggestion queue
+    labels    structured present/absent decisions after taxonomy stabilization
+
+  Talks to the file-backed API in server.py:
+    GET/POST /api/samples  /api/annotations  /api/patterns  /api/suggestions
+    GET      /api/graph
+
+  Visual encoding (SKILL.md phase 2): color hue = message role, opacity =
+  read-this-carefully (boilerplate recedes), spacing = step hierarchy,
+  monospace = tool arguments and structured results, container = a tool call
+  grouped with its result. No CDN dependencies: the whole thing is inline so it
+  works offline and can be committed as one artifact.
+
+  This reference UI targets the Cartwheel trace shape. For a store with a
+  different shape, adapt renderTrace() to the new roles and content types and
+  leave the server API unchanged.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cartwheel Trace Lab</title>
+<style>
+  :root {
+    /* role hues (Gestalt similarity: one hue per role, full saturation) */
+    --role-user: #2563eb;
+    --role-assistant: #059669;
+    --role-tool-call: #b45309;
+    --role-tool-result: #7c3aed;
+    --role-system: #6b7280;
+    --role-retrieval: #0891b2;
+    --role-model: #db2777;
+
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --ink: #1a1a1a;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --hl: #fde68a;             /* human annotation highlight */
+    --hl-pending: #fef08a;     /* mid-annotation, before save */
+    --sugg: #ddd6fe;           /* agent suggestion highlight tint */
+    --sugg-border: #7c3aed;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+  }
+  code, pre, .mono { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; }
+
+  /* ---- top bar ---- */
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 10px 18px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 50;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+  header h1 .dim { color: var(--muted); font-weight: 400; }
+  .views { display: flex; gap: 4px; }
+  .views button {
+    border: 1px solid var(--line); background: var(--bg);
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font: inherit;
+  }
+  .views button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .trace-search {
+    width: 150px; border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; font: inherit; font-size: 13px;
+  }
+  .spacer { flex: 1; }
+  .counts { color: var(--muted); font-size: 13px; }
+  .nav { display: flex; gap: 4px; align-items: center; }
+  .nav button {
+    border: 1px solid var(--line); background: var(--bg);
+    width: 30px; height: 30px; border-radius: 6px; cursor: pointer; font: inherit;
+  }
+  .nav .pos { color: var(--muted); font-size: 13px; min-width: 74px; text-align: center; }
+
+  /* ---- toast banner for new samples/suggestions ---- */
+  #toast {
+    position: fixed; right: 18px; bottom: 18px; z-index: 100;
+    background: var(--ink); color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; opacity: 0; pointer-events: none;
+    transition: opacity .2s; max-width: 320px;
+  }
+  #toast.show { opacity: 1; }
+
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* ---- trace view: two columns, body + margin ---- */
+  #trace-view { padding: 20px 18px 120px; }
+  .trace-header {
+    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline;
+    max-width: 980px; margin: 0 auto 14px; padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .trace-header .tid { font-weight: 700; }
+  .trace-header .meta { color: var(--muted); font-size: 13px; }
+  .trace-header .flag {
+    font-size: 11px; background: #fef3c7; color: #92400e;
+    padding: 2px 7px; border-radius: 10px;
+  }
+  .trace-body-wrap {
+    display: flex; gap: 24px; max-width: 980px; margin: 0 auto;
+    align-items: flex-start; position: relative;
+  }
+  .trace-body { flex: 1; max-width: 720px; }
+  .margin-col { width: 240px; position: relative; flex-shrink: 0; }
+
+  /* a step groups a tool call + its result (Gestalt common region) */
+  .step {
+    border: 1px solid var(--line); border-radius: 8px;
+    margin-bottom: 20px; overflow: hidden; background: var(--panel);
+  }
+  .step.tight { margin-bottom: 8px; }         /* tight within a logical group */
+
+  .msg { padding: 10px 14px; border-left: 4px solid var(--line); }
+  .msg + .msg { border-top: 1px solid var(--line); }
+  .msg .role {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .04em; margin-bottom: 5px;
+  }
+  .msg[data-role="user"]        { border-left-color: var(--role-user); }
+  .msg[data-role="user"] .role        { color: var(--role-user); }
+  .msg[data-role="assistant"]   { border-left-color: var(--role-assistant); }
+  .msg[data-role="assistant"] .role   { color: var(--role-assistant); }
+  .msg[data-role="tool_call"]   { border-left-color: var(--role-tool-call); }
+  .msg[data-role="tool_call"] .role   { color: var(--role-tool-call); }
+  .msg[data-role="tool_result"] { border-left-color: var(--role-tool-result); }
+  .msg[data-role="tool_result"] .role { color: var(--role-tool-result); }
+  .msg[data-role="system"]      { border-left-color: var(--role-system); opacity: .55; }
+  .msg[data-role="system"] .role      { color: var(--role-system); }
+  .msg[data-role="retrieval"]   { border-left-color: var(--role-retrieval); }
+  .msg[data-role="retrieval"] .role   { color: var(--role-retrieval); }
+  .msg[data-role="observation"] { border-left-color: var(--role-retrieval); }
+  .msg[data-role="observation"] .role { color: var(--role-retrieval); }
+  .msg[data-role="model_call"]  { border-left-color: var(--role-model); }
+  .msg[data-role="model_call"] .role { color: var(--role-model); }
+  .msg[data-role="user"] { background: #eff6ff; }
+  .msg[data-role="model_call"] { background: #f5f3ff; }
+  .msg[data-role="reasoning_summary"] { border-left-color: #ea580c; background: #fff7ed; }
+  .msg[data-role="reasoning_summary"] .role { color: #c2410c; }
+  .msg[data-role="tool_call"] { background: #ecfeff; }
+  .msg[data-role="tool_result"] { background: #f0fdf4; }
+  .msg[data-role="assistant"] { background: #fdf2f8; }
+  .msg.boiler { opacity: .5; }                /* identical-across-traces content */
+
+  .msg .text { white-space: pre-wrap; word-wrap: break-word; }
+  .fn { font-weight: 700; }
+  details.args { margin-top: 6px; }
+  details.args summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre.json {
+    background: #f3f4f6; border-radius: 6px; padding: 8px 10px; margin: 6px 0 0;
+    font-size: 12.5px; overflow-x: auto; white-space: pre;
+  }
+  .result-summary { color: var(--muted); font-size: 13px; }
+
+  /* Scenario ground truth stays collapsed during the first read to avoid
+     anchoring the human before they inspect the actual trace. */
+  .scenario-card {
+    max-width: 980px; margin: 0 auto 14px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  }
+  .scenario-card .question { margin: 4px 0; }
+  .scenario-card details { margin-top: 6px; }
+  .scenario-card summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .scenario-card .expected { border-left: 3px solid #dc2626; padding: 8px 10px;
+                             background: #fef2f2; margin-top: 6px; }
+  .scenario-tools { display: flex; flex-wrap: wrap; gap: 7px; align-items: center;
+                    margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
+  .trace-choice { border: 1px solid var(--line); background: var(--bg); border-radius: 6px;
+                  padding: 5px 8px; cursor: pointer; font: inherit; font-size: 12px; }
+  .trace-choice.active { background: #eef2ff; border-color: var(--role-user); color: #3730a3; }
+  .scenario-note { max-width: 980px; margin: 0 auto 14px; display: grid;
+                   grid-template-columns: 1fr auto; gap: 8px; }
+  .scenario-note textarea { min-height: 56px; resize: vertical; border: 1px solid var(--line);
+                            border-radius: 7px; padding: 8px 10px; font: inherit; }
+  .scenario-note button { border: 1px solid var(--ink); background: var(--ink); color: white;
+                          border-radius: 7px; padding: 7px 12px; cursor: pointer; }
+  .scenario-note-list { grid-column: 1 / -1; display: grid; gap: 5px; }
+  .scenario-note-item { background: #fffbeb; border-left: 3px solid #f59e0b;
+                        padding: 6px 9px; font-size: 12.5px; }
+  .chip { display: inline-block; font-size: 11px; padding: 2px 7px;
+          border-radius: 10px; background: #eef2ff; color: #3730a3; margin-right: 4px; }
+  .chip.retry { background: #fee2e2; color: #991b1b; }
+
+  /* ---- highlights + margin notes ---- */
+  .hl { background: var(--hl); border-radius: 2px; cursor: pointer; }
+  .hl.pending-highlight { background: var(--hl-pending); }
+  .hl.sugg { background: var(--sugg); border-bottom: 2px dashed var(--sugg-border); }
+  .hl.outline { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+  .mnote {
+    position: absolute; left: 0; width: 100%;
+    background: var(--panel); border-left: 3px solid var(--hl);
+    border-radius: 4px; padding: 7px 9px; font-size: 12.5px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .mnote.sugg { border-left-color: var(--sugg-border); background: #faf5ff; }
+  .mnote.outline { box-shadow: 0 0 0 2px var(--ink); }
+  .mnote .quote { color: var(--muted); font-style: italic; margin-bottom: 3px; }
+  .mnote .body { white-space: pre-wrap; }
+  .mnote .tag {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    color: var(--sugg-border); text-transform: uppercase; margin-bottom: 3px;
+  }
+  .mnote .acts { margin-top: 5px; display: flex; gap: 6px; }
+  .mnote .acts button {
+    border: 1px solid var(--line); background: var(--bg); font: inherit;
+    font-size: 11px; padding: 2px 8px; border-radius: 5px; cursor: pointer;
+  }
+  .mnote .acts .accept { border-color: var(--role-assistant); color: var(--role-assistant); }
+  .mnote .acts .reject { border-color: #dc2626; color: #dc2626; }
+  .mnote.human .acts { visibility: hidden; }
+  .mnote.human:hover .acts { visibility: visible; }
+
+  /* ---- annotation popover ---- */
+  #popover {
+    position: absolute; z-index: 200; display: none;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.16); padding: 8px;
+  }
+  #popover input {
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+    font: inherit; width: 280px;
+  }
+  #popover .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+  /* ---- map view ---- */
+  #map-view { padding: 18px; }
+  #map-wrap { max-width: 980px; margin: 0 auto; }
+  #map { width: 100%; height: 620px; background: var(--panel);
+         border: 1px solid var(--line); border-radius: 8px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 0; font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+
+  /* ---- progress view ---- */
+  #progress-view { padding: 18px; max-width: 980px; margin: 0 auto; }
+  #review-progress { display: grid; gap: 10px; }
+  .progress-stats { display: flex; gap: 10px; flex-wrap: wrap; }
+  .progress-list { background: var(--panel); border: 1px solid var(--line);
+                   border-radius: 8px; padding: 10px 12px; }
+  .progress-row { display: flex; justify-content: space-between; gap: 12px;
+                  padding: 5px 0; border-top: 1px dashed var(--line); font-size: 12px; }
+  .progress-row:first-child { border-top: 0; }
+  .section-title { font-size: 13px; font-weight: 700; text-transform: uppercase;
+                   letter-spacing: .04em; color: var(--muted); margin: 18px 0 10px; }
+  #treemap { display: flex; flex-wrap: wrap; gap: 10px; }
+  .mode-block {
+    border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    background: var(--panel); min-width: 210px; flex: 1 1 210px;
+  }
+  .mode-block h3 { margin: 0 0 4px; font-size: 14px; font-family: ui-monospace, monospace; }
+  .mode-block .count { float: right; color: var(--muted); font-weight: 400; }
+  .mode-block .def { color: var(--muted); font-size: 12.5px; margin: 4px 0 8px; }
+  .mode-block .notes { list-style: none; margin: 0; padding: 0; }
+  .mode-block .notes li { font-size: 12.5px; padding: 3px 0; border-top: 1px dashed var(--line); cursor: pointer; }
+  .mode-block .notes li:hover { color: var(--role-user); }
+  .mode-block .status {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+  }
+  .status.candidate { background: #fef3c7; color: #92400e; }
+  .status.confirmed { background: #d1fae5; color: #065f46; }
+  .status.frozen    { background: #e0e7ff; color: #3730a3; }
+
+  #sugg-queue { background: var(--panel); border: 1px solid var(--line);
+                border-radius: 8px; padding: 12px; }
+  .queue-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .queue-tools button {
+    border: 1px solid var(--line); background: var(--bg); font: inherit;
+    font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  }
+  .queue-tools .accept { border-color: var(--role-assistant); color: var(--role-assistant); }
+  .queue-tools .dismiss { border-color: #dc2626; color: #dc2626; }
+  .sugg-row { display: flex; gap: 8px; align-items: flex-start; padding: 7px 0;
+              border-top: 1px solid var(--line); font-size: 13px; }
+  .sugg-row .mode { font-family: ui-monospace, monospace; font-size: 12px;
+                    color: var(--sugg-border); min-width: 170px; }
+  .sugg-row .quote { flex: 1; cursor: pointer; }
+  .sugg-row .quote:hover { color: var(--role-user); }
+  .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+
+  /* ---- structured labeling view ---- */
+  #labels-view { padding: 18px; max-width: 1180px; margin: 0 auto; }
+  .label-help { color: var(--muted); margin-bottom: 12px; }
+  .label-table-wrap { overflow-x: auto; background: var(--panel);
+                      border: 1px solid var(--line); border-radius: 8px; }
+  .label-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .label-table th, .label-table td { padding: 8px 10px; border-bottom: 1px solid var(--line);
+                                     text-align: left; vertical-align: top; }
+  .label-table th { position: sticky; top: 51px; background: #f9fafb; z-index: 2; }
+  .label-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px;
+                  overflow: hidden; white-space: nowrap; }
+  .label-toggle button { border: 0; border-right: 1px solid var(--line); background: #fff;
+                         padding: 3px 7px; cursor: pointer; }
+  .label-toggle button:last-child { border-right: 0; }
+  .label-toggle button.active-pass { background: #d1fae5; color: #065f46; }
+  .label-toggle button.active-fail { background: #fee2e2; color: #991b1b; }
+
+  /* ---- run and model-call views ---- */
+  #runs-view, #models-view { padding: 18px; max-width: 1180px; margin: 0 auto; }
+  .run-grid, .model-grid { display: grid; gap: 10px; }
+  .run-card, .model-card { background: var(--panel); border: 1px solid var(--line);
+                           border-radius: 8px; padding: 12px; }
+  .run-card { cursor: pointer; }
+  .run-card:hover { border-color: var(--role-user); }
+  .run-card.selected { box-shadow: 0 0 0 2px var(--role-user); }
+  .card-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .card-head strong { font-size: 14px; }
+  .card-meta { color: var(--muted); font-size: 12.5px; }
+  .model-stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0 12px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 8px 10px; min-width: 120px; }
+  .stat strong { display: block; font-size: 18px; }
+  .filters { display: flex; gap: 8px; align-items: center; }
+  .filters select, .sync-button { border: 1px solid var(--line); background: var(--bg);
+    padding: 6px 8px; border-radius: 6px; font: inherit; font-size: 12px; }
+  .sync-button { cursor: pointer; }
+  .sync-status { color: var(--muted); font-size: 11px; max-width: 210px; }
+  .model-flow { font-family: ui-monospace, monospace; color: var(--role-model);
+                font-size: 12px; margin: 4px 0; }
+  .flow-legend { display: flex; flex-wrap: wrap; gap: 7px; max-width: 980px;
+                 margin: 0 auto 12px; font-size: 11px; color: var(--muted); }
+  .flow-key { border: 1px solid var(--line); border-left-width: 4px;
+              border-radius: 5px; padding: 4px 7px; }
+  .flow-key.model { background: #f5f3ff; border-left-color: var(--role-model); }
+  .flow-key.reasoning { background: #fff7ed; border-left-color: #ea580c; }
+  .flow-key.tool-call { background: #ecfeff; border-left-color: var(--role-tool-call); }
+  .flow-key.tool-result { background: #f0fdf4; border-left-color: var(--role-tool-result); }
+  .flow-key.answer { background: #fdf2f8; border-left-color: var(--role-assistant); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cartwheel <span class="dim">Trace Lab</span></h1>
+  <div class="views">
+    <button data-view="trace" class="active">Conversations</button>
+    <button data-view="runs">Runs</button>
+    <button data-view="models">Model calls</button>
+    <button data-view="map">Map</button>
+    <button data-view="progress">Progress</button>
+    <button data-view="labels">Labels</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="filters"><select id="run-filter"><option value="">All runs</option></select>
+    <button id="sync-now" class="sync-button">Sync now</button>
+    <span id="sync-status" class="sync-status"></span></div>
+  <input id="trace-search" class="trace-search" placeholder="session, scenario, or trace id" />
+  <div class="nav" id="trace-nav">
+    <button id="prev">&larr;</button>
+    <span class="pos" id="pos">0 / 0</span>
+    <button id="next">&rarr;</button>
+  </div>
+  <div class="counts" id="counts"></div>
+</header>
+
+<div id="trace-view" class="view active">
+  <div class="trace-header" id="trace-header"></div>
+  <div class="scenario-card" id="scenario-card"></div>
+  <div class="scenario-note" id="scenario-note"></div>
+  <div class="flow-legend">
+    <span class="flow-key model">Model decision</span>
+    <span class="flow-key reasoning">Published reasoning summary</span>
+    <span class="flow-key tool-call">Tool call</span>
+    <span class="flow-key tool-result">Tool output</span>
+    <span class="flow-key answer">Final answer</span>
+  </div>
+  <div class="trace-body-wrap">
+    <div class="trace-body" id="trace-body"></div>
+    <div class="margin-col" id="margin-col"></div>
+  </div>
+</div>
+
+<div id="runs-view" class="view">
+  <div class="section-title">Scenario runs</div>
+  <div class="label-help">Each batch remains available. Inferred runs contain older traces recorded before run IDs were added.</div>
+  <div id="run-grid" class="run-grid"></div>
+</div>
+
+<div id="models-view" class="view">
+  <div class="section-title">Model calls</div>
+  <div id="model-stats" class="model-stats"></div>
+  <div class="queue-tools"><button id="model-prev">Previous</button><span id="model-page" class="card-meta"></span><button id="model-next">Next</button></div>
+  <div id="model-grid" class="model-grid"></div>
+</div>
+
+<div id="labels-view" class="view">
+  <div class="section-title">Structured labeling</div>
+  <div class="label-help">Use this only after the failure taxonomy stabilizes. Present means the named failure occurs in the trace; absent means it does not.</div>
+  <div id="labels-grid"></div>
+</div>
+
+<div id="map-view" class="view">
+  <div id="map-wrap">
+    <div class="legend">
+      <span><span class="dot" style="background:#94a3b8"></span> trace</span>
+      <span><span class="dot" style="background:#1a1a1a"></span> in sample</span>
+      <span><span class="dot" style="background:#f97316"></span> annotated</span>
+    </div>
+    <canvas id="map"></canvas>
+  </div>
+</div>
+
+<div id="progress-view" class="view">
+  <div class="section-title">Review completion</div>
+  <div id="review-progress"></div>
+  <div class="section-title">Failure modes</div>
+  <div id="treemap"></div>
+  <div class="section-title">Agent suggestions to review</div>
+  <div id="sugg-queue"></div>
+</div>
+
+<div id="popover"><input id="note-input" placeholder="what went wrong? (Enter to save)" /><div class="hint">first failure only, in your own words</div></div>
+<div id="toast"></div>
+
+<script>
+/* ------------------------------------------------------------------ *
+ * State + API                                                         *
+ * ------------------------------------------------------------------ */
+const state = {
+  samples: [],       // [{trace_id, reason, trace, meta, flags}]
+  annotations: [],   // [{id, trace_id, quote, start, end, note, ts}]
+  suggestions: [],   // [{id, trace_id, mode, quote, start, end}]
+  patterns: {},      // {mode: {definition, status, count, example_trace_ids, example_quotes}}
+  graph: {nodes: [], clusters: []},
+  context: {scenarios: {}, traces: {}},
+  runs: [],
+  sync: {enabled: false, in_progress: false},
+  selectedRun: new URLSearchParams(window.location.search).get('run') || '',
+  modelPage: 0,
+  cur: 0,            // index into scenario groups (the human review unit)
+  activeTrace: {},   // scenario key -> selected supporting trace index
+};
+
+const api = {
+  async get(path) {
+    let lastError;
+    // SSH tunnels can briefly reset one of the parallel startup requests.
+    // Retry reads so one transient connection does not blank the whole lab.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const r = await fetch(path, {cache: 'no-store'});
+        if (!r.ok) throw new Error(`${path} returned ${r.status}`);
+        return await r.json();
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  },
+  async post(path, body) {
+    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify(body)});
+    return r.json();
+  },
+};
+
+/* Annotations on disk are usually a bare array (what this app POSTs), but the
+   committed demo seed wraps them as {"annotations": [...]} with a little
+   metadata. Accept either on read; we always write the bare array. */
+function asAnnotationList(a) {
+  if (Array.isArray(a)) return a;
+  if (a && Array.isArray(a.annotations)) return a.annotations;
+  return [];
+}
+
+async function loadAll() {
+  const safe = (path, fallback) => api.get(path).catch(() => fallback);
+  const [samples, annotations, suggestions, patterns, graph, context, runs, sync] = await Promise.all([
+    safe('/api/samples', []), safe('/api/annotations', []),
+    safe('/api/suggestions', []), safe('/api/patterns', {}), safe('/api/graph', {nodes: [], clusters: []}),
+    safe('/api/context', {scenarios: {}, traces: {}}), safe('/api/runs', []),
+    safe('/api/sync-status', {enabled: false, message: 'some TraceLab data could not be loaded'}),
+  ]);
+  state.samples = Array.isArray(samples) ? samples : [];
+  state.annotations = asAnnotationList(annotations);
+  state.suggestions = Array.isArray(suggestions) ? suggestions : [];
+  state.patterns = patterns && typeof patterns === 'object' ? patterns : {};
+  state.graph = graph && graph.nodes ? graph : {nodes: [], clusters: []};
+  state.context = context && context.scenarios ? context : {scenarios: {}, traces: {}};
+  state.runs = Array.isArray(runs) ? runs : [];
+  state.sync = sync && typeof sync === 'object' ? sync : state.sync;
+  if (state.selectedRun && !state.runs.some(run => run.run_id === state.selectedRun)) {
+    state.selectedRun = '';
+  }
+}
+
+/* localStorage backup of human annotations, per SKILL.md */
+function backupAnnotations() {
+  try { localStorage.setItem('cartwheel_annotations', JSON.stringify(state.annotations)); }
+  catch (e) {}
+}
+async function saveAnnotations() {
+  backupAnnotations();
+  await api.post('/api/annotations', state.annotations);
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendering: the trace view                                          *
+ * ------------------------------------------------------------------ */
+function traceRunId(sample) {
+  const context = (state.context.traces || {})[sample.trace_id] || {};
+  return context.run_id || (sample.meta || {}).run_id || '';
+}
+function visibleSamples() {
+  return state.selectedRun
+    ? state.samples.filter(sample => traceRunId(sample) === state.selectedRun)
+    : state.samples;
+}
+function sampleScenarioId(sample) {
+  return String((sample.meta || {}).scenario_id || sample.trace_id);
+}
+function sampleSessionId(sample) {
+  const context = (state.context.traces || {})[sample.trace_id] || {};
+  return String(context.session_id || (sample.meta || {}).session_id || '');
+}
+function scenarioKey(sample) {
+  const sessionId = sampleSessionId(sample);
+  if (sessionId) return `session::${sessionId}`;
+  // Historical Module 1 traces predate session metadata. Keep their fallback
+  // explicit so a scenario id is never presented as a real user session.
+  return `legacy::${traceRunId(sample) || 'unassigned'}::${sampleScenarioId(sample)}`;
+}
+function visibleScenarios() {
+  const grouped = new Map();
+  visibleSamples().forEach(sample => {
+    const key = scenarioKey(sample);
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        runId: traceRunId(sample),
+        scenarioId: sampleScenarioId(sample),
+        sessionId: sampleSessionId(sample),
+        sessionInferred: !sampleSessionId(sample),
+        samples: [],
+      });
+    }
+    grouped.get(key).samples.push(sample);
+  });
+  const groups = [...grouped.values()];
+  groups.forEach(group => group.samples.sort((left, right) => {
+    const leftContext = (state.context.traces || {})[left.trace_id] || {};
+    const rightContext = (state.context.traces || {})[right.trace_id] || {};
+    return Number(leftContext.turn_index || 0) - Number(rightContext.turn_index || 0) ||
+      Number(leftContext.attempt || 1) - Number(rightContext.attempt || 1) ||
+      String(leftContext.timestamp || '').localeCompare(String(rightContext.timestamp || ''));
+  }));
+  return groups.sort((a, b) =>
+    a.scenarioId.localeCompare(b.scenarioId, undefined, {numeric: true}) ||
+    a.runId.localeCompare(b.runId));
+}
+function curScenario() { return visibleScenarios()[state.cur]; }
+function curTrace() {
+  const scenario = curScenario();
+  if (!scenario) return null;
+  const index = Math.min(state.activeTrace[scenario.key] || 0, scenario.samples.length - 1);
+  return scenario.samples[index];
+}
+
+function renderHeader() {
+  const s = curTrace();
+  const group = curScenario();
+  const h = document.getElementById('trace-header');
+  if (!s || !group) { h.innerHTML = '<span class="meta">no scenarios yet</span>'; return; }
+  const m = s.meta || {};
+  const tc = (state.context.traces || {})[s.trace_id] || {};
+  const bits = [];
+  bits.push(`<span class="tid">${escape(group.scenarioId)}</span>`);
+  bits.push(group.sessionId
+    ? `<span class="chip mono">session: ${escape(group.sessionId)}</span>`
+    : `<span class="flag">legacy grouping: run + scenario</span>`);
+  bits.push(`<span class="meta">${group.samples.length} supporting trace${group.samples.length === 1 ? '' : 's'}</span>`);
+  bits.push(`<span class="meta mono">active trace: ${escape(s.trace_id)}</span>`);
+  if (m.role)  bits.push(`<span class="meta">role: ${escape(m.role)}</span>`);
+  if (m.store) bits.push(`<span class="meta">store: ${escape(m.store)}</span>`);
+  if (m.prompt_version) bits.push(`<span class="meta">prompt: ${escape(m.prompt_version)}</span>`);
+  if (tc.timestamp) bits.push(`<span class="meta">${escape(tc.timestamp)}</span>`);
+  if (tc.turn_count) bits.push(`<span class="chip">turn ${tc.turn_index}/${tc.turn_count}</span>`);
+  if (tc.attempt) bits.push(`<span class="chip${tc.is_retry ? ' retry' : ''}">${tc.is_retry ? 'retry ' : 'attempt '}${tc.attempt}</span>`);
+  (tc.models || []).forEach(model => bits.push(`<span class="chip">${escape(model)}</span>`));
+  (tc.tools || []).forEach(tool => bits.push(`<span class="chip mono">${escape(tool)}</span>`));
+  (s.flags || []).forEach(f => bits.push(`<span class="flag">${escape(f)}</span>`));
+  if (s.expected) {
+    const exp = s.expected;
+    const parts = [];
+    if (exp.order) parts.push(exp.order);
+    if (exp.store_override) parts.push(exp.store_override);
+    if (exp.data_error) parts.push('⚠ ' + exp.data_error);
+    if (parts.length) bits.push(`<div style="margin-top:8px;padding:6px 12px;background:rgba(0,0,0,0.03);border-radius:6px;font-size:12px;color:var(--muted)"><strong style="color:var(--ink)">Extra metadata:</strong> ${escape(parts.join(' · '))}</div>`);
+  }
+  h.innerHTML = bits.join(' ');
+}
+
+function renderScenarioContext() {
+  const el = document.getElementById('scenario-card');
+  const group = curScenario();
+  const sample = curTrace();
+  if (!sample || !group) { el.style.display = 'none'; return; }
+  const scenarioId = group.scenarioId;
+  const scenario = (state.context.scenarios || {})[scenarioId];
+  if (!scenario) {
+    el.style.display = 'block';
+    el.innerHTML = `<strong>${escape(scenarioId)}</strong>` + renderTraceChoices(group);
+    renderScenarioNotes();
+    return;
+  }
+  el.style.display = 'block';
+  const questions = (scenario.messages || []).map((message, i) =>
+    `<div class="question"><strong>${i ? `Follow-up ${i}` : 'Opening'}:</strong> ${escape(message)}</div>`
+  ).join('');
+  const source = scenario.evidence ? pretty(scenario.evidence) : 'No structured evidence source';
+  el.innerHTML = `<div><strong>${escape(scenarioId)}</strong> · ${escape(scenario.scenario_group || '')} · ${escape(scenario.role || '')}</div>` +
+    questions +
+    `<details><summary>Reveal expected outcome and evidence</summary>` +
+    `<div class="expected"><strong>${escape(scenario.expected_outcome || 'human judgment')}</strong><br>` +
+    `${escape(scenario.expected || '')}<pre class="json">${escape(source)}</pre></div></details>` +
+    renderTraceChoices(group);
+  renderScenarioNotes();
+}
+
+function renderTraceChoices(group) {
+  if (!group || !group.samples.length) return '';
+  const active = state.activeTrace[group.key] || 0;
+  const buttons = group.samples.map((sample, index) => {
+    const tc = (state.context.traces || {})[sample.trace_id] || {};
+    const label = tc.turn_count > 1 ? `Turn ${tc.turn_index || index + 1}` : `Trace ${index + 1}`;
+    const retry = tc.is_retry ? ` · retry ${tc.attempt}` : '';
+    return `<button class="trace-choice ${index === active ? 'active' : ''}" data-trace-index="${index}" ` +
+      `title="${escape(sample.trace_id)}">${escape(label + retry)}</button>`;
+  }).join('');
+  return `<div class="scenario-tools"><span class="meta">Supporting evidence:</span>${buttons}</div>`;
+}
+
+function renderScenarioNotes() {
+  const el = document.getElementById('scenario-note');
+  const group = curScenario();
+  if (!group) { el.innerHTML = ''; return; }
+  const notes = state.annotations.filter(annotation =>
+    annotation.scenario_id === group.scenarioId &&
+    (!annotation.run_id || annotation.run_id === group.runId) &&
+    (!annotation.session_id || annotation.session_id === group.sessionId) &&
+    annotation.source === 'scenario_comment');
+  el.innerHTML = `<textarea id="scenario-note-input" placeholder="Add a comment about this scenario as a whole…"></textarea>` +
+    `<button id="save-scenario-note">Save scenario comment</button>` +
+    `<div class="scenario-note-list">${notes.map(note =>
+      `<div class="scenario-note-item">${escape(note.note || '')} ` +
+      `<button data-del-scenario-note="${escape(note.id)}">delete</button></div>`).join('')}</div>`;
+  document.getElementById('save-scenario-note').onclick = saveScenarioNote;
+  el.querySelectorAll('[data-del-scenario-note]').forEach(button =>
+    button.onclick = () => deleteAnnotation(button.dataset.delScenarioNote));
+}
+
+async function saveScenarioNote() {
+  const group = curScenario();
+  const sample = curTrace();
+  const input = document.getElementById('scenario-note-input');
+  const note = input ? input.value.trim() : '';
+  if (!group || !sample || !note) return;
+  state.annotations.push({
+    id: 's' + Date.now() + Math.floor(Math.random() * 1000),
+    scenario_id: group.scenarioId,
+    run_id: group.runId,
+    session_id: group.sessionId || null,
+    // Keep one evidence trace for compatibility with existing score exports.
+    trace_id: sample.trace_id,
+    note,
+    source: 'scenario_comment',
+    ts: new Date().toISOString(),
+  });
+  await saveAnnotations();
+  renderScenarioNotes();
+  updateCounts();
+  toast('scenario comment saved');
+}
+
+document.getElementById('scenario-card').addEventListener('click', event => {
+  const button = event.target.closest('[data-trace-index]');
+  const group = curScenario();
+  if (!button || !group) return;
+  state.activeTrace[group.key] = Number(button.dataset.traceIndex);
+  renderHeader(); renderScenarioContext(); renderTrace();
+});
+
+/* Render one trace as a sequence of steps. A tool_call and the tool_result
+   that follows it are grouped into one .step container (common region). */
+function renderTrace() {
+  const s = curTrace();
+  const body = document.getElementById('trace-body');
+  if (!s || !Array.isArray(s.trace)) { body.innerHTML = ''; return; }
+  const html = [];
+  let i = 0;
+  const msgs = s.trace;
+  let toolResultSeen = false;
+  while (i < msgs.length) {
+    let m = msgs[i];
+    if (m.role === 'model_call') {
+      m = {...m, label: toolResultSeen ? 'model · answer synthesis' : 'model · tool decision'};
+    }
+    if (m.role === 'tool_call') {
+      // group this call with an immediately-following result
+      const parts = [renderMsg(m, i)];
+      if (i + 1 < msgs.length && msgs[i + 1].role === 'tool_result') {
+        parts.push(renderMsg(msgs[i + 1], i + 1));
+        toolResultSeen = true;
+        i++;
+      }
+      html.push(`<div class="step">${parts.join('')}</div>`);
+    } else {
+      html.push(`<div class="step">${renderMsg(m, i)}</div>`);
+    }
+    i++;
+  }
+  body.innerHTML = html.join('');
+  applyHighlights();
+  layoutMargin();
+}
+
+function renderMsg(m, idx) {
+  const role = m.role || 'assistant';
+  const label = (m.label || role).replace(/_/g, ' ');
+  const boiler = m.boilerplate ? ' boiler' : '';
+  let inner = '';
+  if (role === 'tool_call') {
+    inner = `<div class="fn">${escape(m.name || 'tool')}()</div>`;
+    if (m.arguments !== undefined) {
+      inner += `<details class="args"><summary>arguments</summary>` +
+               `<pre class="json">${escape(pretty(m.arguments))}</pre></details>`;
+    }
+  } else if (role === 'tool_result') {
+    const full = pretty(m.content !== undefined ? m.content : m.text);
+    const long = full.length > 240;
+    if (long) {
+      inner = `<details class="args"><summary class="result-summary">result (${full.length} chars)</summary>` +
+              `<pre class="json annotatable" data-idx="${idx}">${escape(full)}</pre></details>`;
+    } else {
+      inner = `<pre class="json annotatable" data-idx="${idx}">${escape(full)}</pre>`;
+    }
+  } else if (role === 'model_call') {
+    const call = m.model_call || {};
+    const usage = call.usage_details || {};
+    const cost = call.total_cost !== undefined && call.total_cost !== null
+      ? call.total_cost : (call.cost_details || {}).total;
+    inner = `<div class="card-head"><strong>${escape(call.model || m.name || 'model')}</strong>` +
+      `<span class="card-meta">${escape(call.provider || 'provider unavailable')}</span>` +
+      `<span class="card-meta">${escape(call.operation || '')}</span>` +
+      `<span class="card-meta">${escape(formatDuration(call))}</span></div>` +
+      `<div class="model-flow">model request → published response${call.status ? ` · ${escape(call.status)}` : ''}</div>` +
+      `<details class="args"><summary>observable input</summary><pre class="json">${escape(pretty(m.input))}</pre></details>` +
+      `<details class="args"><summary>observable output</summary><pre class="json annotatable" data-idx="${idx}">${escape(pretty(m.output))}</pre></details>` +
+      `<details class="args"><summary>usage and request metadata</summary><pre class="json">${escape(pretty({
+        input_tokens: usage.input || usage.input_tokens,
+        output_tokens: usage.output || usage.output_tokens,
+        total_tokens: usage.total || usage.total_tokens,
+        cost: cost,
+        model_parameters: call.model_parameters,
+        response_id: call.id,
+        parent_observation_id: call.parent_observation_id,
+      }))}</pre></details>` +
+      `<details class="args"><summary>raw metadata</summary><pre class="json">${escape(pretty(call.metadata || {}))}</pre></details>`;
+  } else if (role === 'reasoning_summary') {
+    inner = `<div class="model-flow">Provider-published summary — not raw chain-of-thought</div>` +
+      `<div class="text annotatable" data-idx="${idx}">${escape(m.text || '')}</div>`;
+  } else {
+    const text = m.text !== undefined ? m.text : pretty(m.content);
+    inner = `<div class="text annotatable" data-idx="${idx}">${md(text)}</div>`;
+  }
+  return `<div class="msg${boiler}" data-role="${role}" data-idx="${idx}">` +
+         `<div class="role">${escape(label)}</div>${inner}</div>`;
+}
+
+function formatDuration(call) {
+  if (call.latency_seconds !== undefined && call.latency_seconds !== null) {
+    return `${Number(call.latency_seconds).toFixed(2)}s`;
+  }
+  if (!call.start_time || !call.end_time) return 'latency unavailable';
+  const seconds = (new Date(call.end_time) - new Date(call.start_time)) / 1000;
+  return Number.isFinite(seconds) ? `${seconds.toFixed(2)}s` : 'latency unavailable';
+}
+
+/* ------------------------------------------------------------------ *
+ * Highlights + margin notes                                          *
+ * ------------------------------------------------------------------ */
+function itemsForTrace() {
+  const tid = curTrace() ? curTrace().trace_id : null;
+  const anns = state.annotations.filter(a => a.trace_id === tid).map(a => ({...a, kind: 'human'}));
+  const sugg = state.suggestions.filter(s => s.trace_id === tid).map(s => ({...s, kind: 'sugg'}));
+  return [...anns, ...sugg];
+}
+
+/* Wrap each item's [start,end] span within its target block in a <span.hl>.
+   We re-render text then walk offsets, so overlapping spans stay simple: we
+   only highlight the first occurrence of the quote inside its block. */
+function applyHighlights() {
+  const items = itemsForTrace();
+  document.querySelectorAll('.annotatable').forEach(el => {
+    const idx = parseInt(el.dataset.idx, 10);
+    const mine = items.filter(it => it.idx === idx || it.idx === undefined);
+    if (!mine.length) return;
+    let text = el.textContent;
+    // Build a list of [start, end, item] ranges found by quote match.
+    const ranges = [];
+    mine.forEach(it => {
+      if (!it.quote) return;
+      const pos = text.indexOf(it.quote);
+      if (pos >= 0) ranges.push([pos, pos + it.quote.length, it]);
+    });
+    if (!ranges.length) return;
+    ranges.sort((a, b) => a[0] - b[0]);
+    let out = '', cursor = 0;
+    ranges.forEach(([s, e, it]) => {
+      if (s < cursor) return; // skip overlaps
+      out += escape(text.slice(cursor, s));
+      const cls = it.kind === 'sugg' ? 'hl sugg' : 'hl';
+      out += `<span class="${cls}" data-item="${it.id}">${escape(text.slice(s, e))}</span>`;
+      cursor = e;
+    });
+    out += escape(text.slice(cursor));
+    el.innerHTML = out;
+  });
+}
+
+/* Position margin notes absolutely, top offset = highlight top relative to the
+   margin container (NO scrollTop; that double-counts). Stack with a min gap. */
+function layoutMargin() {
+  const col = document.getElementById('margin-col');
+  col.innerHTML = '';
+  const items = itemsForTrace();
+  if (!items.length) return;
+  const colRect = col.getBoundingClientRect();
+  const placed = [];
+  let lastBottom = 0;
+  // order by vertical position of the highlight
+  const withPos = items.map(it => {
+    const hl = document.querySelector(`.hl[data-item="${it.id}"]`);
+    const top = hl ? (hl.getBoundingClientRect().top - colRect.top) : 0;
+    return {it, top, hl};
+  }).sort((a, b) => a.top - b.top);
+
+  withPos.forEach(({it, top, hl}) => {
+    const note = document.createElement('div');
+    note.className = 'mnote ' + (it.kind === 'sugg' ? 'sugg' : 'human');
+    note.dataset.item = it.id;
+    let html = '';
+    if (it.kind === 'sugg') html += `<div class="tag">agent · ${escape(it.mode || '')}</div>`;
+    if (it.quote) html += `<div class="quote">"${escape(clip(it.quote, 80))}"</div>`;
+    html += `<div class="body">${escape(it.note || (it.kind === 'sugg' ? '(suggested instance)' : ''))}</div>`;
+    if (it.kind === 'sugg') {
+      html += `<div class="acts"><button class="accept" data-accept="${it.id}">accept</button>` +
+              `<button class="reject" data-reject="${it.id}">dismiss</button></div>`;
+    } else {
+      html += `<div class="acts"><button data-del="${it.id}">delete</button></div>`;
+    }
+    note.innerHTML = html;
+    const y = Math.max(top, lastBottom);
+    note.style.top = y + 'px';
+    col.appendChild(note);
+    lastBottom = y + note.offsetHeight + 8;
+
+    // hover linking between note and highlight
+    if (hl) {
+      note.addEventListener('mouseenter', () => hl.classList.add('outline'));
+      note.addEventListener('mouseleave', () => hl.classList.remove('outline'));
+      hl.addEventListener('mouseenter', () => note.classList.add('outline'));
+      hl.addEventListener('mouseleave', () => note.classList.remove('outline'));
+    }
+    placed.push(note);
+  });
+
+  col.querySelectorAll('[data-accept]').forEach(b =>
+    b.onclick = () => acceptSuggestion(b.dataset.accept));
+  col.querySelectorAll('[data-reject]').forEach(b =>
+    b.onclick = () => dismissSuggestion(b.dataset.reject));
+  col.querySelectorAll('[data-del]').forEach(b =>
+    b.onclick = () => deleteAnnotation(b.dataset.del));
+}
+
+/* ------------------------------------------------------------------ *
+ * In-place annotation                                                *
+ * ------------------------------------------------------------------ */
+let pendingRange = null;   // the wrapped pending-highlight span
+let pendingCtx = null;     // {trace_id, scenario_id, run_id, session_id, quote, idx}
+
+document.getElementById('trace-body').addEventListener('mouseup', () => {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const text = sel.toString().trim();
+  if (!text) return;
+  const anchor = sel.anchorNode && sel.anchorNode.parentElement
+    ? sel.anchorNode.parentElement.closest('.annotatable') : null;
+  if (!anchor) return;
+
+  // Wrap the range in a pending highlight BEFORE focusing the input, so the
+  // native selection clearing does not lose the reviewer's context.
+  const range = sel.getRangeAt(0);
+  const span = document.createElement('span');
+  span.className = 'hl pending-highlight';
+  try { range.surroundContents(span); } catch (e) { return; }
+  pendingRange = span;
+  pendingCtx = {
+    trace_id: curTrace().trace_id,
+    scenario_id: curScenario().scenarioId,
+    run_id: curScenario().runId,
+    session_id: curScenario().sessionId || null,
+    quote: text,
+    idx: parseInt(anchor.dataset.idx, 10),
+  };
+  sel.removeAllRanges();
+
+  const rect = span.getBoundingClientRect();
+  const pop = document.getElementById('popover');
+  pop.style.display = 'block';
+  pop.style.left = (window.scrollX + rect.left) + 'px';
+  pop.style.top = (window.scrollY + rect.bottom + 6) + 'px';
+  const input = document.getElementById('note-input');
+  input.value = '';
+  input.focus();
+});
+
+document.getElementById('note-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { commitAnnotation(); }
+  else if (e.key === 'Escape') { cancelAnnotation(); }
+});
+document.addEventListener('mousedown', (e) => {
+  const pop = document.getElementById('popover');
+  if (pop.style.display === 'block' && !pop.contains(e.target)) cancelAnnotation();
+});
+
+function clearPending() {
+  if (pendingRange && pendingRange.parentNode) {
+    const parent = pendingRange.parentNode;
+    while (pendingRange.firstChild) parent.insertBefore(pendingRange.firstChild, pendingRange);
+    parent.removeChild(pendingRange);
+    parent.normalize();
+  }
+  pendingRange = null; pendingCtx = null;
+  document.getElementById('popover').style.display = 'none';
+}
+function cancelAnnotation() { clearPending(); renderTrace(); }
+
+async function commitAnnotation() {
+  const note = document.getElementById('note-input').value.trim();
+  if (!note || !pendingCtx) { clearPending(); return; }
+  state.annotations.push({
+    id: 'a' + Date.now() + Math.floor(Math.random() * 1000),
+    trace_id: pendingCtx.trace_id,
+    scenario_id: pendingCtx.scenario_id,
+    run_id: pendingCtx.run_id,
+    session_id: pendingCtx.session_id,
+    quote: pendingCtx.quote,
+    idx: pendingCtx.idx,
+    note, ts: new Date().toISOString(),
+  });
+  clearPending();
+  await saveAnnotations();
+  renderTrace();
+  renderProgress();
+  toast('saved · the agent is grouping your notes');
+}
+
+async function deleteAnnotation(id) {
+  state.annotations = state.annotations.filter(a => a.id !== id);
+  await saveAnnotations();
+  renderTrace(); renderScenarioNotes(); renderProgress(); updateCounts();
+}
+
+/* Accepting a suggestion promotes it to a human-confirmed annotation with
+   source accepted_suggestion, and removes it from the queue. */
+async function acceptSuggestion(id) {
+  const s = state.suggestions.find(x => x.id === id);
+  if (!s) return;
+  state.annotations.push({
+    id: 'a' + Date.now() + Math.floor(Math.random() * 1000),
+    trace_id: s.trace_id, quote: s.quote, idx: s.idx,
+    scenario_id: (state.context.traces[s.trace_id] || {}).scenario_id,
+    run_id: (state.context.traces[s.trace_id] || {}).run_id,
+    session_id: (state.context.traces[s.trace_id] || {}).session_id || null,
+    note: s.mode ? `[${s.mode}]` : '(accepted)',
+    source: 'accepted_suggestion', mode: s.mode, ts: new Date().toISOString(),
+  });
+  state.suggestions = state.suggestions.filter(x => x.id !== id);
+  await saveAnnotations();
+  await api.post('/api/suggestions', state.suggestions);
+  renderTrace(); renderProgress();
+}
+async function dismissSuggestion(id) {
+  state.suggestions = state.suggestions.filter(x => x.id !== id);
+  await api.post('/api/suggestions', state.suggestions);
+  renderTrace(); renderProgress();
+}
+
+/* ------------------------------------------------------------------ *
+ * Progress view                                                      *
+ * ------------------------------------------------------------------ */
+function renderProgress() {
+  renderReviewProgress();
+  renderTreemap();
+  renderQueue();
+}
+
+function structuredDecision(traceId, mode) {
+  const matches = state.annotations.filter(annotation =>
+    annotation.trace_id === traceId && annotation.mode === mode &&
+    (annotation.label === 0 || annotation.label === 1));
+  return matches.length ? matches[matches.length - 1] : null;
+}
+
+function renderReviewProgress() {
+  const el = document.getElementById('review-progress');
+  const samples = visibleSamples();
+  const traceIds = new Set(samples.map(sample => sample.trace_id));
+  const reviewed = new Set(state.annotations
+    .filter(annotation => traceIds.has(annotation.trace_id))
+    .map(annotation => annotation.trace_id));
+  const modes = normalizePatterns(state.patterns).filter(mode => mode.name);
+  const required = samples.length * modes.length;
+  let completed = 0;
+  const incomplete = [];
+  samples.forEach(sample => {
+    const missing = modes.filter(mode => !structuredDecision(sample.trace_id, mode.name));
+    completed += modes.length - missing.length;
+    if (missing.length) incomplete.push({sample, missing});
+  });
+  const conversationCount = visibleScenarios().length;
+  const stats = [
+    [reviewed.size, `reviewed traces / ${samples.length}`],
+    [conversationCount, 'conversation groups'],
+    [modes.length, 'taxonomy modes'],
+    [modes.length ? `${completed}/${required}` : 'not started', 'structured judgments'],
+  ].map(([value, label]) => `<div class="stat"><strong>${escape(value)}</strong>${escape(label)}</div>`).join('');
+  const rows = modes.length
+    ? incomplete.slice(0, 25).map(({sample, missing}) =>
+        `<div class="progress-row"><button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape(sampleScenarioId(sample))} · ${escape(clip(sample.trace_id, 12))}</button>` +
+        `<span>${missing.length} incomplete</span></div>`).join('')
+    : '<div class="empty">Structured completeness begins after the human taxonomy has final modes.</div>';
+  const remaining = incomplete.length > 25
+    ? `<div class="empty">…and ${incomplete.length - 25} more traces with incomplete judgments.</div>` : '';
+  el.innerHTML = `<div class="progress-stats">${stats}</div><div class="progress-list">${rows}${remaining}</div>`;
+  el.querySelectorAll('.open-trace').forEach(button => button.onclick = () => gotoTrace(button.dataset.tid));
+}
+
+/* Normalize the taxonomy into [{name, ...}] regardless of on-disk shape.
+   During a live session the agent pushes a flat map {mode_name: {...}} as it
+   groups notes. The committed demo/final state uses the Artifact L schema:
+   {modes: [{name, ...}], human_signoff, reconciliation}. Accept both. */
+function normalizePatterns(p) {
+  if (!p || typeof p !== 'object') return [];
+  if (Array.isArray(p.modes)) return p.modes.filter(m => m && m.name);
+  return Object.entries(p).map(([name, m]) => ({name, ...(m || {})}));
+}
+function modeCount(m) {
+  // a live mode carries `count`; a final mode carries the any-instance count.
+  if (typeof m.count === 'number') return m.count;
+  if (typeof m.any_instance_count === 'number') return m.any_instance_count;
+  if (typeof m.first_failure_count === 'number') return m.first_failure_count;
+  return (m.example_trace_ids || []).length;
+}
+
+function renderTreemap() {
+  const el = document.getElementById('treemap');
+  const modes = normalizePatterns(state.patterns);
+  if (!modes.length) { el.innerHTML = '<div class="empty">No modes yet. As you annotate, the agent groups your notes here.</div>'; return; }
+  // block area roughly proportional to count via flex-grow
+  modes.sort((a, b) => modeCount(b) - modeCount(a));
+  el.innerHTML = modes.map(m => {
+    // a live mode has free-text example_quotes; a final mode lists trace ids.
+    const ids = m.example_trace_ids || [];
+    const quotes = m.example_quotes || [];
+    const items = (quotes.length ? quotes : ids).slice(0, 6).map((val, i) =>
+      `<li data-tid="${escape(quotes.length ? (ids[i] || '') : val)}">${escape(clip(val, 90))}</li>`).join('');
+    const status = m.status || 'candidate';
+    const grow = Math.max(1, modeCount(m));
+    const sev = typeof m.severity === 'number' ? ` · sev ${m.severity}` : '';
+    return `<div class="mode-block" style="flex-grow:${grow}">` +
+      `<h3>${escape(m.name)}<span class="status ${status}">${status}</span>` +
+      `<span class="count">${modeCount(m)}${sev}</span></h3>` +
+      `<div class="def">${escape(m.definition || '')}</div>` +
+      `<ul class="notes">${items}</ul></div>`;
+  }).join('');
+  el.querySelectorAll('li[data-tid]').forEach(li => {
+    li.onclick = () => { if (li.dataset.tid) gotoTrace(li.dataset.tid); };
+  });
+}
+
+function renderQueue() {
+  const el = document.getElementById('sugg-queue');
+  if (!state.suggestions.length) { el.innerHTML = '<div class="empty">No pending suggestions.</div>'; return; }
+  const rows = state.suggestions.map(s =>
+    `<div class="sugg-row"><input type="checkbox" data-id="${s.id}" checked />` +
+    `<span class="mode">${escape(s.mode || '')}</span>` +
+    `<span class="quote" data-tid="${escape(s.trace_id)}">"${escape(clip(s.quote || '', 110))}"</span></div>`
+  ).join('');
+  el.innerHTML =
+    `<div class="queue-tools">` +
+    `<label><input type="checkbox" id="sel-all" checked /> select all</label>` +
+    `<button class="accept" id="accept-sel">Accept selected</button>` +
+    `<button class="dismiss" id="dismiss-sel">Dismiss selected</button>` +
+    `<span class="empty" style="padding:0">${state.suggestions.length} pending · favor recall, prune the rest</span>` +
+    `</div>` + rows;
+
+  document.getElementById('sel-all').onchange = (e) => {
+    el.querySelectorAll('.sugg-row input[type=checkbox]').forEach(c => c.checked = e.target.checked);
+  };
+  el.querySelectorAll('.quote[data-tid]').forEach(q =>
+    q.onclick = () => gotoTrace(q.dataset.tid));
+  document.getElementById('accept-sel').onclick = () => bulkQueue(true);
+  document.getElementById('dismiss-sel').onclick = () => bulkQueue(false);
+}
+
+async function bulkQueue(accept) {
+  const el = document.getElementById('sugg-queue');
+  const ids = [...el.querySelectorAll('.sugg-row input[type=checkbox]:checked')].map(c => c.dataset.id);
+  for (const id of ids) { accept ? await acceptSuggestion(id) : await dismissSuggestion(id); }
+}
+
+/* ------------------------------------------------------------------ *
+ * Runs + model calls                                                 *
+ * ------------------------------------------------------------------ */
+function selectRun(runId, openTrace = false) {
+  state.selectedRun = runId || '';
+  state.cur = 0;
+  state.modelPage = 0;
+  const url = new URL(window.location.href);
+  state.selectedRun ? url.searchParams.set('run', state.selectedRun) : url.searchParams.delete('run');
+  history.replaceState({}, '', url);
+  renderRunFilter(); renderRuns(); renderModels(); renderHeader();
+  renderScenarioContext(); renderTrace(); renderMap(); renderLabels(); updatePos(); updateCounts();
+  if (openTrace) switchView('trace');
+}
+
+function renderRunFilter() {
+  const select = document.getElementById('run-filter');
+  select.innerHTML = `<option value="">All runs</option>` + state.runs.map(run =>
+    `<option value="${escape(run.run_id)}" ${run.run_id === state.selectedRun ? 'selected' : ''}>` +
+    `${escape(run.name || run.run_id)} · ${run.scenario_count || 0} scenarios</option>`).join('');
+}
+
+function renderRuns() {
+  const el = document.getElementById('run-grid');
+  if (!state.runs.length) {
+    el.innerHTML = '<div class="empty">No synchronized runs yet.</div>';
+    return;
+  }
+  el.innerHTML = state.runs.map(run =>
+    `<div class="run-card ${run.run_id === state.selectedRun ? 'selected' : ''}" data-run="${escape(run.run_id)}">` +
+      `<div class="card-head"><strong>${escape(run.name || run.run_id)}</strong>` +
+      `${run.inferred ? '<span class="chip retry">inferred metadata</span>' : '<span class="chip">recorded run ID</span>'}` +
+      `<span class="card-meta">${escape(run.status || '')}</span></div>` +
+      `<div class="card-meta">${escape(run.started_at || 'start unavailable')} → ${escape(run.ended_at || 'end unavailable')}</div>` +
+      `<div>${run.scenario_count || 0} scenarios · ${run.trace_count || 0} traces · ${escape((run.models || []).join(', ') || 'model unavailable')}</div>` +
+    `</div>`).join('');
+  el.querySelectorAll('[data-run]').forEach(card => card.onclick = () => selectRun(card.dataset.run, true));
+}
+
+function modelMessages(sample) {
+  return (sample.trace || []).filter(message => message.role === 'model_call');
+}
+
+function numeric(obj, keys) {
+  for (const key of keys) {
+    const value = obj && obj[key];
+    if (value !== undefined && value !== null && Number.isFinite(Number(value))) return Number(value);
+  }
+  return 0;
+}
+
+function renderModels() {
+  const samples = visibleSamples();
+  const calls = samples.flatMap(sample => modelMessages(sample).map(message => ({sample, message, call: message.model_call || {}})));
+  const pageSize = 100;
+  const pageCount = Math.max(1, Math.ceil(calls.length / pageSize));
+  state.modelPage = Math.min(state.modelPage, pageCount - 1);
+  const pageCalls = calls.slice(state.modelPage * pageSize, (state.modelPage + 1) * pageSize);
+  const inputTokens = calls.reduce((sum, item) => sum + numeric(item.call.usage_details, ['input', 'input_tokens', 'prompt_tokens']), 0);
+  const outputTokens = calls.reduce((sum, item) => sum + numeric(item.call.usage_details, ['output', 'output_tokens', 'completion_tokens']), 0);
+  const cost = calls.reduce((sum, item) => sum + numeric(item.call, ['total_cost']), 0);
+  const errors = calls.filter(item => String(item.call.status || '').toLowerCase().includes('error') || item.call.status_message).length;
+  document.getElementById('model-stats').innerHTML = [
+    ['model calls', calls.length], ['input tokens', inputTokens || 'unavailable'],
+    ['output tokens', outputTokens || 'unavailable'], ['cost', cost ? `$${cost.toFixed(4)}` : 'unavailable'],
+    ['errors', errors],
+  ].map(([label, value]) => `<div class="stat"><strong>${escape(value)}</strong>${escape(label)}</div>`).join('');
+  const el = document.getElementById('model-grid');
+  document.getElementById('model-page').textContent = calls.length
+    ? `Page ${state.modelPage + 1} of ${pageCount} · ${calls.length} calls`
+    : 'No model calls';
+  document.getElementById('model-prev').disabled = state.modelPage === 0;
+  document.getElementById('model-next').disabled = state.modelPage >= pageCount - 1;
+  if (!calls.length) {
+    el.innerHTML = '<div class="empty">No model spans were published for the selected run. Tool and final-output traces remain available in Trace view.</div>';
+    return;
+  }
+  el.innerHTML = pageCalls.map(({sample, message, call}) => {
+    const usage = call.usage_details || {};
+    return `<div class="model-card"><div class="card-head">` +
+      `<button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape((sample.meta || {}).scenario_id || clip(sample.trace_id, 12))}</button>` +
+      `<strong>${escape(call.model || message.name || 'model')}</strong>` +
+      `<span class="card-meta">${escape(call.provider || 'provider unavailable')}</span>` +
+      `<span class="card-meta">${escape(formatDuration(call))}</span></div>` +
+      `<div class="model-flow">${escape(call.operation || 'model call')} · parent ${escape(call.parent_observation_id || 'unavailable')}</div>` +
+      `<details><summary>input and output</summary><pre class="json">${escape(pretty({input: message.input, output: message.output}))}</pre></details>` +
+      `<details><summary>metadata</summary><pre class="json">${escape(pretty({usage, parameters: call.model_parameters, status: call.status, error: call.status_message, metadata: call.metadata}))}</pre></details>` +
+    `</div>`;
+  }).join('');
+  el.querySelectorAll('.open-trace').forEach(button => button.onclick = () => gotoTrace(button.dataset.tid));
+}
+
+function renderSyncStatus() {
+  const status = state.sync || {};
+  const el = document.getElementById('sync-status');
+  if (!status.enabled && !status.last_success_at) {
+    el.textContent = status.error || status.message || 'offline cache';
+    return;
+  }
+  if (status.in_progress) { el.textContent = 'syncing Langfuse…'; return; }
+  if (status.error) { el.textContent = `sync retry: ${status.error}`; return; }
+  el.textContent = status.last_success_at
+    ? `synced ${new Date(status.last_success_at).toLocaleTimeString()} · +${status.added || 0} / ↻${status.updated || 0}`
+    : 'waiting for first sync';
+}
+
+document.getElementById('run-filter').onchange = event => selectRun(event.target.value);
+document.getElementById('model-prev').onclick = () => {
+  if (state.modelPage > 0) { state.modelPage--; renderModels(); }
+};
+document.getElementById('model-next').onclick = () => {
+  state.modelPage++; renderModels();
+};
+document.getElementById('sync-now').onclick = async () => {
+  try {
+    const result = await api.post('/api/sync', {});
+    toast(result.started ? 'Langfuse sync started' : 'sync already running');
+  } catch (error) { toast('could not start sync'); }
+};
+
+/* ------------------------------------------------------------------ *
+ * Map view (canvas scatter of the 2D projection)                     *
+ * ------------------------------------------------------------------ */
+function renderMap() {
+  const canvas = document.getElementById('map');
+  const nodes = state.graph.nodes || [];
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = 620;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!nodes.length) {
+    ctx.fillStyle = '#9ca3af'; ctx.font = '13px sans-serif';
+    ctx.fillText('No projection yet (GET /api/graph is empty).', 20, 30);
+    return;
+  }
+  const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const pad = 30;
+  const sx = v => pad + (v - minX) / ((maxX - minX) || 1) * (w - 2 * pad);
+  const sy = v => pad + (v - minY) / ((maxY - minY) || 1) * (h - 2 * pad);
+  const hues = ['#94a3b8','#a78bfa','#60a5fa','#34d399','#fbbf24','#f472b6','#22d3ee','#fb923c'];
+  const sampleIds = new Set(visibleSamples().map(s => s.trace_id));
+  const annIds = new Set(state.annotations.map(a => a.trace_id));
+
+  nodes.forEach(n => {
+    const annotated = annIds.has(n.trace_id);
+    const sampled = sampleIds.has(n.trace_id);
+    ctx.beginPath();
+    ctx.arc(sx(n.x), sy(n.y), sampled ? 6 : 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = annotated ? '#f97316' : hues[(n.cluster || 0) % hues.length];
+    ctx.fill();
+    if (sampled) { ctx.lineWidth = 1.5; ctx.strokeStyle = '#1a1a1a'; ctx.stroke(); }
+  });
+
+  canvas._nodes = nodes.map(n => ({...n, px: sx(n.x), py: sy(n.y)}));
+}
+document.getElementById('map').addEventListener('click', (e) => {
+  const canvas = document.getElementById('map');
+  const nodes = canvas._nodes || [];
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let best = null, bestD = 1e9;
+  const sampleIds = new Set(visibleSamples().map(s => s.trace_id));
+  nodes.forEach(n => {
+    if (!sampleIds.has(n.trace_id)) return;
+    const d = (n.px - mx) ** 2 + (n.py - my) ** 2;
+    if (d < bestD) { bestD = d; best = n; }
+  });
+  if (best && bestD < 200) gotoTrace(best.trace_id);
+});
+
+/* ------------------------------------------------------------------ *
+ * Navigation + view switching                                        *
+ * ------------------------------------------------------------------ */
+function gotoTrace(tid) {
+  let i = visibleScenarios().findIndex(group => group.samples.some(sample => sample.trace_id === tid));
+  if (i < 0) {
+    state.selectedRun = '';
+    renderRunFilter();
+    i = visibleScenarios().findIndex(group => group.samples.some(sample => sample.trace_id === tid));
+  }
+  if (i < 0) { toast('that trace is not in the current sample'); return; }
+  state.cur = i;
+  const group = curScenario();
+  state.activeTrace[group.key] = group.samples.findIndex(sample => sample.trace_id === tid);
+  switchView('trace');
+  renderHeader(); renderScenarioContext(); renderTrace(); updatePos();
+}
+function updatePos() {
+  document.getElementById('pos').textContent =
+    visibleScenarios().length ? `${state.cur + 1} / ${visibleScenarios().length} conversations` : '0 / 0 conversations';
+}
+document.getElementById('prev').onclick = () => {
+  if (state.cur > 0) { state.cur--; renderHeader(); renderScenarioContext(); renderTrace(); updatePos(); }
+};
+document.getElementById('next').onclick = () => {
+  if (state.cur < visibleScenarios().length - 1) { state.cur++; renderHeader(); renderScenarioContext(); renderTrace(); updatePos(); }
+};
+document.getElementById('trace-search').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const query = e.target.value.trim().toLowerCase();
+  const index = visibleScenarios().findIndex(group =>
+    group.sessionId.toLowerCase().includes(query) ||
+    group.scenarioId.toLowerCase().includes(query) ||
+    group.samples.some(sample => sample.trace_id.toLowerCase().includes(query)));
+  if (index < 0) { toast('no scenario or supporting trace matches that id'); return; }
+  state.cur = index; switchView('trace');
+  renderHeader(); renderScenarioContext(); renderTrace(); updatePos();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'j' || e.key === 'ArrowDown' || e.key === 'ArrowRight') document.getElementById('next').click();
+  if (e.key === 'k' || e.key === 'ArrowUp' || e.key === 'ArrowLeft') document.getElementById('prev').click();
+});
+
+function switchView(name) {
+  document.querySelectorAll('.views button').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById(name + '-view').classList.add('active');
+  document.getElementById('trace-nav').style.display = name === 'trace' ? 'flex' : 'none';
+  if (name === 'map') renderMap();
+  if (name === 'runs') renderRuns();
+  if (name === 'models') renderModels();
+  if (name === 'progress') renderProgress();
+  if (name === 'labels') renderLabels();
+}
+document.querySelectorAll('.views button').forEach(b =>
+  b.onclick = () => switchView(b.dataset.view));
+
+function updateCounts() {
+  const conversationCount = visibleScenarios().length;
+  const traceCount = visibleSamples().length;
+  document.getElementById('counts').textContent =
+    `${conversationCount} conversations · ${traceCount} traces · ${state.annotations.length} notes · ` +
+    `${normalizePatterns(state.patterns).length} modes · ${state.suggestions.length} suggestions`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Structured labels: activated only after human-authored modes exist. *
+ * ------------------------------------------------------------------ */
+function renderLabels() {
+  const el = document.getElementById('labels-grid');
+  const modes = normalizePatterns(state.patterns).filter(mode => mode.name);
+  if (!modes.length) {
+    el.innerHTML = '<div class="empty">No finalized modes yet. Open-code traces first; this table appears after your taxonomy has modes.</div>';
+    return;
+  }
+  const head = modes.map(mode => `<th>${escape(mode.name)}</th>`).join('');
+  const rows = visibleSamples().map(sample => {
+    const group = visibleScenarios().find(candidate =>
+      candidate.samples.some(member => member.trace_id === sample.trace_id));
+    const cells = modes.map(mode => {
+      const current = structuredDecision(sample.trace_id, mode.name);
+      return `<td><div class="label-toggle" data-trace="${escape(sample.trace_id)}" data-scenario="${escape(sampleScenarioId(sample))}" data-run="${escape(traceRunId(sample))}" data-session="${escape(sampleSessionId(sample))}" data-mode="${escape(mode.name)}">` +
+        `<button data-label="0" class="${current && current.label === 0 ? 'active-pass' : ''}">absent</button>` +
+        `<button data-label="1" class="${current && current.label === 1 ? 'active-fail' : ''}">present</button></div></td>`;
+    }).join('');
+    const legacy = group && group.sessionInferred ? ' · legacy group' : '';
+    return `<tr><td><button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape(sampleScenarioId(sample))}</button><div class="card-meta">${escape(clip(sample.trace_id, 16) + legacy)}</div></td>${cells}</tr>`;
+  }).join('');
+  el.innerHTML = `<div class="label-table-wrap"><table class="label-table"><thead><tr><th>trace</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  el.querySelectorAll('.open-trace').forEach(button => button.onclick = () => gotoTrace(button.dataset.tid));
+  el.querySelectorAll('.label-toggle button').forEach(button => button.onclick = () => {
+    const group = button.closest('.label-toggle');
+    saveStructuredLabel(group.dataset.trace, group.dataset.scenario, group.dataset.run, group.dataset.session, group.dataset.mode, Number(button.dataset.label));
+  });
+}
+
+async function saveStructuredLabel(traceId, scenarioId, runId, sessionId, mode, label) {
+  state.annotations.push({
+    id: 'l' + Date.now() + Math.floor(Math.random() * 1000),
+    trace_id: traceId, scenario_id: scenarioId, run_id: runId,
+    session_id: sessionId || null, mode, label,
+    note: label ? `${mode} present` : `${mode} absent`,
+    source: 'human_structured_label', ts: new Date().toISOString(),
+  });
+  await saveAnnotations();
+  renderLabels(); renderProgress(); updateCounts();
+  toast(`saved ${mode}: ${label ? 'present' : 'absent'}`);
+}
+
+/* ------------------------------------------------------------------ *
+ * Polling: pick up agent pushes (samples, suggestions, patterns) and *
+ * replayed annotations. Compare-and-render, ~2s, like the watcher.   *
+ * ------------------------------------------------------------------ */
+let lastSig = '';
+let pollNumber = 0;
+async function poll() {
+  try {
+    const [suggestions, patterns, annotations, runs, sync] = await Promise.all([
+      api.get('/api/suggestions'), api.get('/api/patterns'),
+      api.get('/api/annotations'), api.get('/api/runs'), api.get('/api/sync-status'),
+    ]);
+    pollNumber++;
+    const syncChanged = Boolean(sync && sync.last_success_at && sync.last_success_at !== state.sync.last_success_at);
+    const refreshHeavy = syncChanged || pollNumber % 15 === 0;
+    let samples = state.samples, context = state.context, graph = state.graph;
+    if (refreshHeavy) {
+      [samples, context, graph] = await Promise.all([
+        api.get('/api/samples'), api.get('/api/context'), api.get('/api/graph'),
+      ]);
+    }
+    const newSampleCount = Array.isArray(samples) ? samples.length : 0;
+    const grewSamples = newSampleCount > state.samples.length;
+    const newSuggCount = Array.isArray(suggestions) ? suggestions.length : 0;
+    const grewSugg = newSuggCount > state.suggestions.length;
+
+    // Merge remote annotations that this client did not create (replay demo,
+    // or a second reviewer). De-dup by id, falling back to a content key for
+    // seeded items that arrive without one.
+    const key = a => a.id || `${a.trace_id}::${(a.note || '').slice(0, 40)}`;
+    const seen = new Set(state.annotations.map(key));
+    const remote = asAnnotationList(annotations);
+    const merged = [...state.annotations];
+    remote.forEach(a => { const k = key(a); if (!seen.has(k)) { seen.add(k); merged.push(a); } });
+
+    const sig = JSON.stringify([newSampleCount, newSuggCount,
+      normalizePatterns(patterns).length, merged.length, (runs || []).length,
+      sync && sync.last_success_at, sync && sync.in_progress, sync && sync.error,
+      refreshHeavy ? pollNumber : 0]);
+    if (sig === lastSig) return;
+    lastSig = sig;
+
+    state.samples = Array.isArray(samples) ? samples : state.samples;
+    state.suggestions = Array.isArray(suggestions) ? suggestions : state.suggestions;
+    state.patterns = patterns && typeof patterns === 'object' ? patterns : state.patterns;
+    state.annotations = merged;
+    state.runs = Array.isArray(runs) ? runs : state.runs;
+    state.sync = sync && typeof sync === 'object' ? sync : state.sync;
+    state.context = context && context.scenarios ? context : state.context;
+    state.graph = graph && graph.nodes ? graph : state.graph;
+    if (state.cur >= visibleScenarios().length) state.cur = Math.max(0, visibleScenarios().length - 1);
+
+    if (grewSamples) toast(`new traces added to your batch (${newSampleCount})`);
+    if (grewSugg) toast(`new agent suggestions to review (${newSuggCount})`);
+
+    renderRunFilter(); renderSyncStatus(); renderRuns(); renderModels();
+    renderHeader(); renderScenarioContext(); renderTrace(); renderProgress(); renderLabels(); updatePos(); updateCounts();
+  } catch (e) { /* server not up yet; keep trying */ }
+}
+
+/* ------------------------------------------------------------------ *
+ * Utilities                                                          *
+ * ------------------------------------------------------------------ */
+function escape(s) {
+  return String(s === undefined || s === null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function md(s) {
+  return escape(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\n/g, '<br>');
+}
+function pretty(v) {
+  if (typeof v === 'string') return v;
+  try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
+}
+function clip(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+window.addEventListener('resize', () => {
+  if (document.getElementById('map-view').classList.contains('active')) renderMap();
+  else layoutMargin();
+});
+
+/* ------------------------------------------------------------------ *
+ * Boot                                                               *
+ * ------------------------------------------------------------------ */
+(async function boot() {
+  await loadAll();
+  renderRunFilter(); renderSyncStatus(); renderRuns(); renderModels();
+  renderHeader(); renderScenarioContext(); renderTrace(); renderProgress(); renderLabels(); updatePos(); updateCounts();
+  setInterval(poll, 2000);
+})();
+</script>
+</body>
+</html>
