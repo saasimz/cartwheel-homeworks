@@ -311,6 +311,10 @@
   .label-toggle button:last-child { border-right: 0; }
   .label-toggle button.active-pass { background: #d1fae5; color: #065f46; }
   .label-toggle button.active-fail { background: #fee2e2; color: #991b1b; }
+  .label-toggle button.suggested-pass { background: #ecfdf5; color: #047857;
+                                         outline: 2px dashed #10b981; outline-offset: -2px; }
+  .label-toggle button.suggested-fail { background: #fff1f2; color: #be123c;
+                                         outline: 2px dashed #fb7185; outline-offset: -2px; }
 
   /* ---- run and model-call views ---- */
   #runs-view, #models-view { padding: 18px; max-width: 1180px; margin: 0 auto; }
@@ -436,6 +440,7 @@ const state = {
   samples: [],       // [{trace_id, reason, trace, meta, flags}]
   annotations: [],   // [{id, trace_id, quote, start, end, note, ts}]
   suggestions: [],   // [{id, trace_id, mode, quote, start, end}]
+  labelSuggestions: [], // provisional AI labels; never treated as human decisions
   patterns: {},      // {mode: {definition, status, count, example_trace_ids, example_quotes}}
   graph: {nodes: [], clusters: []},
   context: {scenarios: {}, traces: {}},
@@ -445,6 +450,8 @@ const state = {
   modelPage: 0,
   cur: 0,            // index into scenario groups (the human review unit)
   activeTrace: {},   // scenario key -> selected supporting trace index
+  queueBusy: false,  // prevent polling or double-clicks from replaying decisions
+  annotationSaveChain: Promise.resolve(), // serialize writes from rapid label clicks
 };
 
 const api = {
@@ -482,15 +489,17 @@ function asAnnotationList(a) {
 
 async function loadAll() {
   const safe = (path, fallback) => api.get(path).catch(() => fallback);
-  const [samples, annotations, suggestions, patterns, graph, context, runs, sync] = await Promise.all([
+  const [samples, annotations, suggestions, labelSuggestions, patterns, graph, context, runs, sync] = await Promise.all([
     safe('/api/samples', []), safe('/api/annotations', []),
-    safe('/api/suggestions', []), safe('/api/patterns', {}), safe('/api/graph', {nodes: [], clusters: []}),
+    safe('/api/suggestions', []), safe('/ui/label_suggestions.json', []),
+    safe('/api/patterns', {}), safe('/api/graph', {nodes: [], clusters: []}),
     safe('/api/context', {scenarios: {}, traces: {}}), safe('/api/runs', []),
     safe('/api/sync-status', {enabled: false, message: 'some TraceLab data could not be loaded'}),
   ]);
   state.samples = Array.isArray(samples) ? samples : [];
   state.annotations = asAnnotationList(annotations);
   state.suggestions = Array.isArray(suggestions) ? suggestions : [];
+  state.labelSuggestions = Array.isArray(labelSuggestions) ? labelSuggestions : [];
   state.patterns = patterns && typeof patterns === 'object' ? patterns : {};
   state.graph = graph && graph.nodes ? graph : {nodes: [], clusters: []};
   state.context = context && context.scenarios ? context : {scenarios: {}, traces: {}};
@@ -508,7 +517,13 @@ function backupAnnotations() {
 }
 async function saveAnnotations() {
   backupAnnotations();
-  await api.post('/api/annotations', state.annotations);
+  // Capture each version and write it after the previous save. The reviewer
+  // may label several cells quickly; concurrent file writes can corrupt JSON.
+  const snapshot = state.annotations.map(annotation => ({...annotation}));
+  state.annotationSaveChain = state.annotationSaveChain
+    .catch(() => undefined)
+    .then(() => api.post('/api/annotations', snapshot));
+  await state.annotationSaveChain;
 }
 
 /* ------------------------------------------------------------------ *
@@ -990,8 +1005,9 @@ async function acceptSuggestion(id) {
     scenario_id: (state.context.traces[s.trace_id] || {}).scenario_id,
     run_id: (state.context.traces[s.trace_id] || {}).run_id,
     session_id: (state.context.traces[s.trace_id] || {}).session_id || null,
-    note: s.mode ? `[${s.mode}]` : '(accepted)',
-    source: 'accepted_suggestion', mode: s.mode, ts: new Date().toISOString(),
+    note: s.mode ? `[${s.mode}] accepted suggestion` : '(accepted suggestion)',
+    source: 'accepted_suggestion', mode: s.mode, label: 1,
+    suggestion_id: s.id, ts: new Date().toISOString(),
   });
   state.suggestions = state.suggestions.filter(x => x.id !== id);
   await saveAnnotations();
@@ -999,7 +1015,22 @@ async function acceptSuggestion(id) {
   renderTrace(); renderProgress();
 }
 async function dismissSuggestion(id) {
+  const s = state.suggestions.find(x => x.id === id);
+  if (!s) return;
+  // A rejected retrieval candidate is useful evidence: it defines the mode's
+  // boundary and must survive after the pending queue item is removed.
+  state.annotations.push({
+    id: 'a' + Date.now() + Math.floor(Math.random() * 1000),
+    trace_id: s.trace_id, quote: s.quote, idx: s.idx,
+    scenario_id: (state.context.traces[s.trace_id] || {}).scenario_id,
+    run_id: (state.context.traces[s.trace_id] || {}).run_id,
+    session_id: (state.context.traces[s.trace_id] || {}).session_id || null,
+    note: s.mode ? `[${s.mode}] rejected suggestion` : '(rejected suggestion)',
+    source: 'rejected_suggestion', mode: s.mode, label: 0,
+    suggestion_id: s.id, ts: new Date().toISOString(),
+  });
   state.suggestions = state.suggestions.filter(x => x.id !== id);
+  await saveAnnotations();
   await api.post('/api/suggestions', state.suggestions);
   renderTrace(); renderProgress();
 }
@@ -1020,18 +1051,23 @@ function structuredDecision(traceId, mode) {
   return matches.length ? matches[matches.length - 1] : null;
 }
 
+function humanReviewedTraceIds() {
+  return new Set(state.annotations
+    .filter(annotation => annotation.trace_id && annotation.source !== 'human_structured_label')
+    .map(annotation => annotation.trace_id));
+}
+
 function renderReviewProgress() {
   const el = document.getElementById('review-progress');
   const samples = visibleSamples();
   const traceIds = new Set(samples.map(sample => sample.trace_id));
-  const reviewed = new Set(state.annotations
-    .filter(annotation => traceIds.has(annotation.trace_id))
-    .map(annotation => annotation.trace_id));
+  const reviewed = new Set([...humanReviewedTraceIds()].filter(traceId => traceIds.has(traceId)));
+  const reviewedSamples = samples.filter(sample => reviewed.has(sample.trace_id));
   const modes = normalizePatterns(state.patterns).filter(mode => mode.name);
-  const required = samples.length * modes.length;
+  const required = reviewedSamples.length * modes.length;
   let completed = 0;
   const incomplete = [];
-  samples.forEach(sample => {
+  reviewedSamples.forEach(sample => {
     const missing = modes.filter(mode => !structuredDecision(sample.trace_id, mode.name));
     completed += modes.length - missing.length;
     if (missing.length) incomplete.push({sample, missing});
@@ -1123,9 +1159,38 @@ function renderQueue() {
 }
 
 async function bulkQueue(accept) {
+  if (state.queueBusy) return;
   const el = document.getElementById('sugg-queue');
   const ids = [...el.querySelectorAll('.sugg-row input[type=checkbox]:checked')].map(c => c.dataset.id);
-  for (const id of ids) { accept ? await acceptSuggestion(id) : await dismissSuggestion(id); }
+  if (!ids.length) return;
+  state.queueBusy = true;
+  el.querySelectorAll('button').forEach(button => { button.disabled = true; });
+  try {
+    const selected = state.suggestions.filter(s => ids.includes(s.id));
+    selected.forEach(s => {
+      const context = state.context.traces[s.trace_id] || {};
+      state.annotations.push({
+        id: 'a' + Date.now() + Math.floor(Math.random() * 1000000),
+        trace_id: s.trace_id, quote: s.quote, idx: s.idx,
+        scenario_id: context.scenario_id || s.scenario_id,
+        run_id: context.run_id,
+        session_id: context.session_id || null,
+        note: s.mode
+          ? `[${s.mode}] ${accept ? 'accepted' : 'rejected'} suggestion`
+          : `(${accept ? 'accepted' : 'rejected'} suggestion)`,
+        source: accept ? 'accepted_suggestion' : 'rejected_suggestion',
+        mode: s.mode, label: accept ? 1 : 0,
+        suggestion_id: s.id, ts: new Date().toISOString(),
+      });
+    });
+    state.suggestions = state.suggestions.filter(s => !ids.includes(s.id));
+    // Save each collection once so a bulk decision cannot interleave writes.
+    await saveAnnotations();
+    await api.post('/api/suggestions', state.suggestions);
+    renderTrace(); renderProgress();
+  } finally {
+    state.queueBusy = false;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1332,11 +1397,23 @@ document.getElementById('next').onclick = () => {
 document.getElementById('trace-search').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   const query = e.target.value.trim().toLowerCase();
-  const index = visibleScenarios().findIndex(group =>
+  const scenarios = visibleScenarios();
+  const index = scenarios.findIndex(group =>
     group.sessionId.toLowerCase().includes(query) ||
     group.scenarioId.toLowerCase().includes(query) ||
     group.samples.some(sample => sample.trace_id.toLowerCase().includes(query)));
   if (index < 0) { toast('no scenario or supporting trace matches that id'); return; }
+
+  // A scenario can contain several reruns. When the reviewer searches for a
+  // trace ID, activate that exact supporting trace so their annotation is
+  // saved against the evidence they intended to inspect.
+  const matchedGroup = scenarios[index];
+  const matchedTraceIndex = matchedGroup.samples.findIndex(sample =>
+    sample.trace_id.toLowerCase().includes(query));
+  if (matchedTraceIndex >= 0) {
+    state.activeTrace[matchedGroup.key] = matchedTraceIndex;
+  }
+
   state.cur = index; switchView('trace');
   renderHeader(); renderScenarioContext(); renderTrace(); updatePos();
 });
@@ -1379,20 +1456,48 @@ function renderLabels() {
     el.innerHTML = '<div class="empty">No finalized modes yet. Open-code traces first; this table appears after your taxonomy has modes.</div>';
     return;
   }
+  // Structured labeling applies to the human-reviewed sample, not every trace
+  // loaded from Langfuse. Excluding structured labels themselves prevents an
+  // accidental click on an unreviewed row from expanding the review sample.
+  const reviewedTraceIds = humanReviewedTraceIds();
+  const labelSamples = visibleSamples().map(sample => ({
+    ...sample,
+    // Keep the reviewed-state calculation visible on each row so later
+    // filtering cannot accidentally expose unreviewed traces for labeling.
+    isHumanReviewed: reviewedTraceIds.has(sample.trace_id),
+  })).filter(sample => sample.isHumanReviewed);
+  if (!labelSamples.length) {
+    el.innerHTML = '<div class="empty">No human-reviewed traces are available for structured labeling yet.</div>';
+    return;
+  }
+  const proposalMap = new Map(state.labelSuggestions.map(suggestion => [
+    `${suggestion.trace_id}::${suggestion.mode}`, suggestion,
+  ]));
+  let visibleProposalCount = 0;
   const head = modes.map(mode => `<th>${escape(mode.name)}</th>`).join('');
-  const rows = visibleSamples().map(sample => {
+  const rows = labelSamples.map(sample => {
     const group = visibleScenarios().find(candidate =>
       candidate.samples.some(member => member.trace_id === sample.trace_id));
     const cells = modes.map(mode => {
       const current = structuredDecision(sample.trace_id, mode.name);
-      return `<td><div class="label-toggle" data-trace="${escape(sample.trace_id)}" data-scenario="${escape(sampleScenarioId(sample))}" data-run="${escape(traceRunId(sample))}" data-session="${escape(sampleSessionId(sample))}" data-mode="${escape(mode.name)}">` +
-        `<button data-label="0" class="${current && current.label === 0 ? 'active-pass' : ''}">absent</button>` +
-        `<button data-label="1" class="${current && current.label === 1 ? 'active-fail' : ''}">present</button></div></td>`;
+      const proposal = current ? null : proposalMap.get(`${sample.trace_id}::${mode.name}`);
+      if (proposal) visibleProposalCount++;
+      const absentClass = current && current.label === 0 ? 'active-pass'
+        : proposal && proposal.suggested_label === 0 ? 'suggested-pass' : '';
+      const presentClass = current && current.label === 1 ? 'active-fail'
+        : proposal && proposal.suggested_label === 1 ? 'suggested-fail' : '';
+      const title = proposal
+        ? `AI proposal — ${proposal.suggested_label ? 'Present' : 'Absent'}: ${proposal.evidence || ''}`
+        : current ? 'Human-confirmed decision' : 'No proposal available';
+      return `<td><div class="label-toggle" title="${escape(title)}" data-trace="${escape(sample.trace_id)}" data-scenario="${escape(sampleScenarioId(sample))}" data-run="${escape(traceRunId(sample))}" data-session="${escape(sampleSessionId(sample))}" data-mode="${escape(mode.name)}">` +
+        `<button data-label="0" class="${absentClass}">${proposal && proposal.suggested_label === 0 ? 'AI absent' : 'absent'}</button>` +
+        `<button data-label="1" class="${presentClass}">${proposal && proposal.suggested_label === 1 ? 'AI present' : 'present'}</button></div></td>`;
     }).join('');
     const legacy = group && group.sessionInferred ? ' · legacy group' : '';
     return `<tr><td><button class="mono open-trace" data-tid="${escape(sample.trace_id)}">${escape(sampleScenarioId(sample))}</button><div class="card-meta">${escape(clip(sample.trace_id, 16) + legacy)}</div></td>${cells}</tr>`;
   }).join('');
-  el.innerHTML = `<div class="label-table-wrap"><table class="label-table"><thead><tr><th>trace</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  el.innerHTML = `<div class="label-help">Labeling ${labelSamples.length} human-reviewed traces across ${modes.length} final modes. ${visibleProposalCount} unresolved cells have dashed AI proposals. Hover for evidence; click a proposed choice only when you confirm it. Solid color means human-confirmed.</div>` +
+    `<div class="label-table-wrap"><table class="label-table"><thead><tr><th>trace</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
   el.querySelectorAll('.open-trace').forEach(button => button.onclick = () => gotoTrace(button.dataset.tid));
   el.querySelectorAll('.label-toggle button').forEach(button => button.onclick = () => {
     const group = button.closest('.label-toggle');
@@ -1420,6 +1525,7 @@ async function saveStructuredLabel(traceId, scenarioId, runId, sessionId, mode, 
 let lastSig = '';
 let pollNumber = 0;
 async function poll() {
+  if (state.queueBusy) return;
   try {
     const [suggestions, patterns, annotations, runs, sync] = await Promise.all([
       api.get('/api/suggestions'), api.get('/api/patterns'),

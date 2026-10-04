@@ -1,1 +1,997 @@
-{"modes": []}
+{
+  "modes": [
+    {
+      "name": "non_customer_facing_policy_or_tool_details",
+      "definition": "Present when a final response communicating a policy or business-rule decision exposes internal policy identifiers, internal document names, or raw tool fields instead of translating the rule and outcome into customer-facing language. A verified public link may be provided, but internal document references must not be shown.",
+      "status": "confirmed",
+      "count": 47,
+      "example_trace_ids": [
+        "58f18c296eaa06613f2d3fb27dd7b708",
+        "49d09d7e5713eea003bde44c46484e3c",
+        "4be935c98a8b09b1fc1f7e9c5fec869c",
+        "628894567adb6b1a63bf41d38a279866",
+        "aad0e178737fd046d473996f42da8e5d",
+        "199210d851c61738e6d23e313626b782",
+        "6f88b1fdbd1f973aff5672022a3688f8",
+        "4abb6b154d651fd3e8b19f9eb424f35b",
+        "37d8bb1391c67a62cc894d7fa2496787",
+        "f1b72924fbd86ade7706a72bcc9bed59",
+        "1b0b6f643dba45dda0f09d9282da5e77",
+        "8c21814322d1c670300e706891da009a",
+        "033f91f6c53b67430c7f827ce266befd",
+        "ede2456459496e8e952dbb45e6b7a38d",
+        "1514cdc7a9f641e71749cf1cc16b98e5",
+        "9f8f4915b1103c41b73ddc8cbc63352b"
+      ],
+      "example_quotes": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "created_from": [
+        "a179023768631020",
+        "hw4-support-0241-resp-7",
+        "a1790677834932587",
+        "a1790713580136639",
+        "a1790714679483204",
+        "a1790769796250985",
+        "a179077035740450",
+        "a1790770402682448",
+        "a1790770440096810",
+        "a1790773757526377",
+        "a1790773977707287",
+        "a1790774334103447",
+        "a179077485113891",
+        "a1790712996071313",
+        "a1790713118214818",
+        "a1790713238242667"
+      ],
+      "boundary": "The comparison must remain within policy or business-rule answers. An answer does not have this failure merely because it uses a tool; it fails when internal document or tool details are surfaced to the customer. Missing factual reasoning remains missing_decision_rationale.",
+      "likely_evaluator_type": "llm_judge",
+      "requirement_source": [
+        "RESP-5",
+        "RESP-7"
+      ],
+      "close_negative_trace_ids": [
+        "f3a51b66eec5eca5bffeccfecd01cb3e",
+        "ddc04781dcb9b04a7a8ea6b9e08f2dae",
+        "960156e6a56a802e21a6a6bdd6fdffde"
+      ],
+      "close_negative_status": "requirement_met_three_human_confirmed",
+      "human_decision": "keep; merged mode clarified by the human to require policy or business-rule claims expressed without internal document references",
+      "close_negative_candidates": [
+        {
+          "trace_id": "e7b112b45875fa02257a42ce067984ad",
+          "scenario_id": "support-0046",
+          "role": "shopper",
+          "intent": "cancel_order",
+          "record_state": "shipped_order",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains in customer-facing language that a shipped order cannot be cancelled, without naming an internal policy document or exposing raw tool fields.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "e0b1b97ee01ba24d1cb49ef44bc52b4a",
+          "scenario_id": "support-0250",
+          "role": "merchant",
+          "intent": "refund_order",
+          "record_state": "refund_above_order_total",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains that the requested refund exceeds the order total in customer-facing language, without citing an internal document.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "e6d32b0d20a6cc5841aec3541136b869",
+          "scenario_id": "support-0249",
+          "role": "shopper",
+          "intent": "refund_order",
+          "record_state": "nonpositive_refund_amount",
+          "tools": [
+            "get_order",
+            "issue_refund"
+          ],
+          "retrieval_reason": "Explains the positive-amount requirement directly to the customer without naming an internal policy document; it may still contain a separate unnecessary-tool failure.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "eff5eeea0071a183b08d7db68fd274a0",
+          "scenario_id": "support-0040",
+          "role": "shopper",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains the eligibility rule and refusal naturally, without exposing an internal policy identifier or raw refund record.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "a7397c9c9d025e3e7f79243ea58515b7",
+          "scenario_id": "support-0037",
+          "role": "merchant",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "States the refund eligibility decision in customer-facing language without referring to an internal policy document.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "790e57d53a4abbeef4e35c19c7cc3f1a",
+          "scenario_id": "support-0034",
+          "role": "shopper",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains the refund-eligibility refusal using customer-facing order details without naming an internal policy document or exposing a raw refund record.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "5e0c3ceb695449be878b0bb0e39a0de9",
+          "scenario_id": "support-0031",
+          "role": "shopper",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Communicates that the delivered order is not refund-eligible in natural language without an internal document identifier.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "3fbcac065bc726b93eaf23644d943fc7",
+          "scenario_id": "support-0025",
+          "role": "shopper",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "States the refund eligibility decision and relevant customer-facing order facts without internal policy or tool-field references.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "f3a51b66eec5eca5bffeccfecd01cb3e",
+          "scenario_id": "support-0206",
+          "role": "shopper",
+          "intent": "order_status",
+          "record_state": "cross_scope_order",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains the shopper authorization rule in customer-facing language without displaying the internal permission result or document name.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the authorization rule is expressed in customer-facing language without internal document or tool-detail exposure.",
+          "decided_at": "2026-09-30T16:41:46.351872+00:00"
+        },
+        {
+          "trace_id": "ddc04781dcb9b04a7a8ea6b9e08f2dae",
+          "scenario_id": "support-0213",
+          "role": "merchant",
+          "intent": "find_order",
+          "record_state": "cross_scope_order",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains the merchant authorization boundary without exposing internal policy identifiers or inaccessible order details.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the authorization rule is expressed in customer-facing language without internal document or tool-detail exposure.",
+          "decided_at": "2026-09-30T16:41:46.352609+00:00"
+        },
+        {
+          "trace_id": "960156e6a56a802e21a6a6bdd6fdffde",
+          "scenario_id": "support-0214",
+          "role": "shopper",
+          "intent": "order_status",
+          "record_state": "cross_scope_order",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains the shopper privacy and authorization boundary in customer-facing language without exposing internal policy identifiers or another user's data.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the authorization rule is expressed in customer-facing language without internal document or tool-detail exposure.",
+          "decided_at": "2026-09-30T16:41:46.352613+00:00"
+        }
+      ],
+      "definition_revision": {
+        "status": "human_clarified",
+        "note": "Close negatives must themselves communicate policy or business-rule claims in customer-facing language; plain order-status answers are not close enough."
+      },
+      "positive_examples_human_confirmed": true,
+      "boundary_human_confirmed": true,
+      "confirmed_at": "2026-09-30T16:53:45.322665+00:00",
+      "labeled_trace_count": 133,
+      "absent_trace_count": 86,
+      "sample_fraction": 0.3533834586466165,
+      "sample_fraction_denominator": 133,
+      "labeling_status": "complete_human_approved",
+      "stability_status": "stable_after_final_batch_revision"
+    },
+    {
+      "name": "missing_decision_rationale",
+      "definition": "Present when the response states a cancellation, refund, refusal, or escalation outcome without explaining the order fact and policy rule that caused that outcome.",
+      "status": "confirmed",
+      "count": 28,
+      "example_trace_ids": [
+        "63c6bf1082390b68eb0140cb3185dfbe",
+        "ac5999d4b956020f83ca869386c6089b",
+        "5e0c3ceb695449be878b0bb0e39a0de9",
+        "adb2b76c9b6409d4011fd1a427df7914",
+        "3fbcac065bc726b93eaf23644d943fc7",
+        "7d1e9c41d1f362a090a79391d3a0e1f8",
+        "583c7cc5f69dc0fa5daffe951d55fbed",
+        "a8f500de7770448bd66bb5eb9072c2c6",
+        "76dd63d5c02c91ed97d96d02bddd83cb",
+        "f47e7a1bfcb3c068f22ac83351619167"
+      ],
+      "example_quotes": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "created_from": [
+        "a1789915560022295",
+        "a1790237583443644",
+        "a1790713306560433",
+        "a1790713446707673",
+        "a1790769707847930",
+        "a1790713514060811",
+        "a1790774263129367",
+        "a1790774820412741",
+        "a1790774903508723",
+        "a1790776531411122"
+      ],
+      "boundary": "This mode concerns the explanation of an otherwise stated decision. A wrong decision caused by using the wrong policy belongs in store_policy_override_ignored or dispute_workflow_mishandled.",
+      "likely_evaluator_type": "llm_judge",
+      "requirement_source": [
+        "RESP-5"
+      ],
+      "close_negative_trace_ids": [
+        "f7c030d07526ba7a05812ea733872891",
+        "262a72ff5c5dbf37c4a5eec5c36a45ce",
+        "eff5eeea0071a183b08d7db68fd274a0"
+      ],
+      "close_negative_status": "requirement_met_three_human_confirmed",
+      "close_negative_candidates": [
+        {
+          "trace_id": "f7c030d07526ba7a05812ea733872891",
+          "scenario_id": "support-0058",
+          "role": "support",
+          "intent": "cancel_order",
+          "record_state": "shipped_order",
+          "tools": [
+            "search_help_center",
+            "get_order"
+          ],
+          "retrieval_reason": "Explains that cancellation is unavailable because the order has already shipped.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the response states the relevant reason for the decision.",
+          "decided_at": "2026-09-30T16:19:22.393345+00:00"
+        },
+        {
+          "trace_id": "262a72ff5c5dbf37c4a5eec5c36a45ce",
+          "scenario_id": "support-0049",
+          "role": "shopper",
+          "intent": "cancel_order",
+          "record_state": "shipped_order",
+          "tools": [
+            "search_help_center",
+            "get_order"
+          ],
+          "retrieval_reason": "Connects the refusal to the shipped status and the pre-shipment cancellation rule.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the response states the relevant reason for the decision.",
+          "decided_at": "2026-09-30T16:19:22.393565+00:00"
+        },
+        {
+          "trace_id": "eff5eeea0071a183b08d7db68fd274a0",
+          "scenario_id": "support-0040",
+          "role": "shopper",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Explains the refund refusal using the order's ineligible state and delivery details.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the refund refusal includes the relevant eligibility reason.",
+          "decided_at": "2026-09-30T16:46:41.262790+00:00"
+        },
+        {
+          "trace_id": "a7397c9c9d025e3e7f79243ea58515b7",
+          "scenario_id": "support-0037",
+          "role": "merchant",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "States that the refund cannot be issued because the delivered order is not eligible.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "790e57d53a4abbeef4e35c19c7cc3f1a",
+          "scenario_id": "support-0034",
+          "role": "shopper",
+          "intent": "refund_order",
+          "record_state": "delivered_refund_ineligible",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Gives the ineligibility fact and relevant order details with the refusal.",
+          "status": "pending_human_review"
+        }
+      ],
+      "positive_examples_human_confirmed": true,
+      "boundary_human_confirmed": true,
+      "confirmed_at": "2026-09-30T16:53:45.322665+00:00",
+      "labeled_trace_count": 133,
+      "absent_trace_count": 105,
+      "sample_fraction": 0.21052631578947367,
+      "sample_fraction_denominator": 133,
+      "labeling_status": "complete_human_approved",
+      "stability_status": "stable_after_final_batch_revision"
+    },
+    {
+      "name": "dispute_workflow_mishandled",
+      "definition": "Present when a dispute request is mishandled in either of two observed ways: the agent routes it into the refund workflow, or the agent opens, escalates, or promises a dispute without correctly enforcing the inclusive 60-day post-delivery window.",
+      "status": "confirmed",
+      "count": 10,
+      "example_trace_ids": [
+        "6ba132f0ef45838d3adaec3c48239df1",
+        "d475ed4e0825f99f8c795752d5d395d1",
+        "c0ca4eea8f42f25c00b425779e4b255a",
+        "a0a6ef3299303d55353b735b61f564cc",
+        "6c7d092c4351ace1fe28bd41b6d2a0e9",
+        "bfd7345bdf86db75215696e214dc0dd2",
+        "51216f114e45fcf8ea9061e164a78ef9",
+        "2d22461c0f8e0209de976517073ac847",
+        "9e6a0dafa9309fe74cc02fc71aaf3218",
+        "a1689e2ebcb0412e4f7f15ce6a8cb5d4"
+      ],
+      "example_quotes": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "created_from": [
+        "a1790771062989989",
+        "a179077113725583",
+        "a1790771264032391",
+        "a1790771347756618",
+        "a1790771475620218",
+        "a1790770722247972",
+        "a1790770913188688",
+        "a1790771327814426",
+        "a1790771403384135",
+        "a1790771533794121"
+      ],
+      "boundary": "The mode applies only to dispute requests. A legitimate refund request is outside the mode, and a dispute that stays out of the refund workflow while correctly applying the 60-day window is a close negative. Repeated but relevant calls remain redundant_tool_calls.",
+      "likely_evaluator_type": "code_check",
+      "requirement_source": [
+        "SCOPE-1",
+        "TOOL-2",
+        "TOOL-7",
+        "ESC-3",
+        "DISPUTE-1"
+      ],
+      "close_negative_trace_ids": [
+        "9f0a67087e8a2ecc755d996064e5f3e1",
+        "81b4b9c57ef9fffc291a2d13bd8ef751",
+        "aeb5df9d4368f6d57da23d14312962f0"
+      ],
+      "close_negative_candidates": [
+        {
+          "trace_id": "9f0a67087e8a2ecc755d996064e5f3e1",
+          "scenario_id": "support-0101",
+          "role": "shopper",
+          "intent": "dispute_clarification",
+          "record_state": "delivered_order_within_dispute_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Handles a dispute question with order and dispute-policy lookups and does not enter the refund workflow.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the dispute request did not enter the refund workflow.",
+          "decided_at": "2026-09-30T16:20:38.415716+00:00"
+        },
+        {
+          "trace_id": "81b4b9c57ef9fffc291a2d13bd8ef751",
+          "scenario_id": "support-0105",
+          "role": "shopper",
+          "intent": "dispute_clarification",
+          "record_state": "delivered_order_within_dispute_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Answers dispute eligibility without calling issue_refund or a refund-specific workflow.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the dispute request did not enter the refund workflow.",
+          "decided_at": "2026-09-30T16:20:38.416026+00:00"
+        },
+        {
+          "trace_id": "ab6762aa23bdea59c43bb7547d525605",
+          "scenario_id": "support-0106",
+          "role": "shopper",
+          "intent": "dispute_clarification",
+          "record_state": "delivered_order_within_dispute_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Treats the request as a dispute-policy question rather than as a refund request.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "aeb5df9d4368f6d57da23d14312962f0",
+          "scenario_id": "support-0108",
+          "role": "support",
+          "intent": "dispute_clarification",
+          "record_state": "delivered_order_within_dispute_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Uses dispute evidence and avoids the refund tool entirely.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the dispute request did not enter the refund workflow.",
+          "decided_at": "2026-09-30T16:20:38.416028+00:00"
+        },
+        {
+          "trace_id": "4079c6825d35bbf026bd344797e23c6b",
+          "scenario_id": "support-0110",
+          "role": "shopper",
+          "intent": "dispute_clarification",
+          "record_state": "delivered_order_within_dispute_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Checks the order and dispute policy without substituting the refund workflow.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "bb939eaf16a0e2a6da6b28f816e31179",
+          "scenario_id": "support-0112",
+          "role": "merchant",
+          "intent": "dispute_clarification",
+          "record_state": "delivered_order_within_dispute_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Calculates that the 60-day window has expired and declines the dispute rather than opening it.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "356ff456b384d94a5d3ae31302d89de1",
+          "scenario_id": "support-0111",
+          "role": "shopper",
+          "intent": "dispute_clarification",
+          "record_state": "delivered_order_within_dispute_window",
+          "tools": [
+            "get_order",
+            "search_help_center",
+            "get_policy"
+          ],
+          "retrieval_reason": "Uses the delivery date to conclude that the dispute window has passed.",
+          "status": "pending_human_review"
+        }
+      ],
+      "close_negative_status": "requirement_met_three_human_confirmed",
+      "human_decision": "keep; merged from refund_tool_used_for_dispute and dispute_window_not_enforced",
+      "positive_examples_human_confirmed": true,
+      "boundary_human_confirmed": true,
+      "merged_at": "2026-09-30T16:24:34.941330+00:00",
+      "confirmed_at": "2026-09-30T16:53:45.322665+00:00",
+      "labeled_trace_count": 133,
+      "absent_trace_count": 123,
+      "sample_fraction": 0.07518796992481203,
+      "sample_fraction_denominator": 133,
+      "labeling_status": "complete_human_approved",
+      "stability_status": "stable_after_final_batch_revision"
+    },
+    {
+      "name": "redundant_tool_calls",
+      "definition": "Present when a trace repeats the same or an equivalent lookup after the first result already supplied enough evidence to decide or answer. Repetition with materially different arguments is not a failure when earlier evidence was insufficient, errored, or a distinct platform/store policy must be retrieved.",
+      "status": "confirmed",
+      "count": 28,
+      "example_trace_ids": [
+        "06a2574f6c397f9107e04403231a381a",
+        "0cddbdba1e69fc7b16dbd8c91b0494b2",
+        "15db67e680cfd5439b50b73f34b0c427",
+        "195dd7e699cac88627ef73f68b5e8991",
+        "27e4696aae7b2fc2ec6e16c9e1bb0085",
+        "3af374bdaf0bfa631be84b7c810d6cfc",
+        "43fc8ce0a53ea94c2d74a00b8719764d",
+        "4b90e529ba867fe0c0bfb6a9ec15cf93",
+        "6c6a77add620771bd0e4e3827176ddd6",
+        "7d86615368441a7d1cbc48214d9b7e5a",
+        "8d5575945f61e6727bf3013eb45a7a07",
+        "9260985835e383dd34c60067c3a0873f",
+        "957d7488c7f7ca613470f16719626c5a",
+        "b0165923f8abd623351a8887b6487b4e",
+        "bfd7345bdf86db75215696e214dc0dd2",
+        "c9af7f969f2d0874bb269709c49fa73d",
+        "d9b30e5c2ae7adfbb8c9438b73a9efab",
+        "f3a51b66eec5eca5bffeccfecd01cb3e"
+      ],
+      "example_quotes": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "created_from": [
+        "a179077077398019",
+        "a1790772730158431",
+        "a1790773554809309",
+        "a1790773633982768",
+        "a1790773942250895",
+        "a1790774758265250"
+      ],
+      "boundary": "Count a repeated or unnecessary call only when it adds no decision-relevant evidence. Do not count a necessary second lookup for a distinct record, platform rule, store override, or recovery from an insufficient/failed result.",
+      "likely_evaluator_type": "llm_judge",
+      "requirement_source": [
+        "TOOL-R1"
+      ],
+      "close_negative_trace_ids": [
+        "10844897c57e04bb91b3b189c9c7d6b2",
+        "e0b1b97ee01ba24d1cb49ef44bc52b4a",
+        "2535f6b74caf323b0814889e4cc46e94"
+      ],
+      "close_negative_status": "requirement_met_three_human_confirmed",
+      "close_negative_candidates": [
+        {
+          "trace_id": "10844897c57e04bb91b3b189c9c7d6b2",
+          "scenario_id": "support-0230",
+          "role": "support",
+          "intent": "refund_order",
+          "record_state": "refund_exact_threshold",
+          "tools": [
+            "get_order",
+            "issue_refund"
+          ],
+          "retrieval_reason": "Uses the necessary get_order and issue_refund sequence once each.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the trace uses only the tool calls needed for this request.",
+          "decided_at": "2026-09-30T16:22:02.826484+00:00"
+        },
+        {
+          "trace_id": "e0b1b97ee01ba24d1cb49ef44bc52b4a",
+          "scenario_id": "support-0250",
+          "role": "merchant",
+          "intent": "refund_order",
+          "record_state": "refund_above_order_total",
+          "tools": [
+            "get_order"
+          ],
+          "retrieval_reason": "Stops after one order lookup establishes that the requested refund exceeds the order total.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the trace uses only the tool calls needed for this request.",
+          "decided_at": "2026-09-30T16:22:02.826741+00:00"
+        },
+        {
+          "trace_id": "cd3809d2b98640cfcd07f941d0444b40",
+          "scenario_id": "support-0246",
+          "role": "shopper",
+          "intent": "search_product",
+          "record_state": "empty_product_query",
+          "tools": [
+            "search_products"
+          ],
+          "retrieval_reason": "Uses one product search and stops after receiving the invalid-argument result.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "2535f6b74caf323b0814889e4cc46e94",
+          "scenario_id": "support-0245",
+          "role": "support",
+          "intent": "search_product",
+          "record_state": "no_product_match",
+          "tools": [
+            "search_products"
+          ],
+          "retrieval_reason": "Uses a single product search for a no-match request.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the trace uses only the tool calls needed for this request.",
+          "decided_at": "2026-09-30T16:22:02.826744+00:00"
+        },
+        {
+          "trace_id": "340550c6a43804518e11afaa7134400d",
+          "scenario_id": "support-0200",
+          "role": "support",
+          "intent": "search_product",
+          "record_state": "product-invalid-price",
+          "tools": [
+            "search_products"
+          ],
+          "retrieval_reason": "Uses a single search_products call to report the catalog price anomaly.",
+          "status": "pending_human_review"
+        }
+      ],
+      "positive_examples_human_confirmed": true,
+      "boundary_human_confirmed": true,
+      "confirmed_at": "2026-09-30T16:53:45.322665+00:00",
+      "point2_first_pass": {
+        "reviewed": 6,
+        "accepted": 6,
+        "rejected": 0,
+        "status": "human_review_complete"
+      },
+      "point2_second_pass": {
+        "reviewed": 6,
+        "accepted": 6,
+        "rejected": 0,
+        "status": "human_review_complete"
+      },
+      "point2_boundary_rejections": {
+        "trace_ids": [
+          "10844897c57e04bb91b3b189c9c7d6b2",
+          "e0b1b97ee01ba24d1cb49ef44bc52b4a",
+          "2535f6b74caf323b0814889e4cc46e94"
+        ],
+        "count": 3,
+        "source": "previously_human_confirmed_close_negatives",
+        "status": "recorded_as_rejected_suggestions"
+      },
+      "point2_search": {
+        "status": "complete",
+        "accepted_suggestions": 12,
+        "rejected_suggestions": 3,
+        "completed_at": "2026-09-30T17:22:51Z"
+      },
+      "labeled_trace_count": 133,
+      "absent_trace_count": 105,
+      "sample_fraction": 0.21052631578947367,
+      "sample_fraction_denominator": 133,
+      "labeling_status": "complete_human_approved",
+      "stability_status": "stable_after_final_batch_revision"
+    },
+    {
+      "name": "store_policy_override_ignored",
+      "definition": "Present when a store-specific policy applies but the response evaluates or explains the case using Cartwheel's platform default instead of the store override.",
+      "status": "confirmed",
+      "count": 7,
+      "example_trace_ids": [
+        "9386abb1c300722ea8f80c76f7ebd06e",
+        "f1b72924fbd86ade7706a72bcc9bed59",
+        "8575b5c82749e77053dacb5988c32459",
+        "b0165923f8abd623351a8887b6487b4e",
+        "156c630d2dc96397c7acbd0411be8670"
+      ],
+      "example_quotes": [
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "created_from": [
+        "a1789915787848858",
+        "a1790773746939109",
+        "a1790773813785849",
+        "a1790773942250895",
+        "a1790774037009302"
+      ],
+      "boundary": "A correct store-policy decision with a missing public link belongs in non_customer_facing_policy_or_tool_details. This mode requires the wrong policy precedence or outcome.",
+      "likely_evaluator_type": "llm_judge",
+      "requirement_source": [
+        "POLICY-1"
+      ],
+      "close_negative_trace_ids": [
+        "cb6dd1b1b18a7aa3992b18e1d1cdf598",
+        "f69758613d9b1e7d8273b4f2e81a6f03",
+        "1755b22488351b133f4595dbbe5bd559"
+      ],
+      "close_negative_status": "requirement_met_three_human_confirmed",
+      "close_negative_candidates": [
+        {
+          "trace_id": "cb6dd1b1b18a7aa3992b18e1d1cdf598",
+          "scenario_id": "support-0226",
+          "role": "support",
+          "intent": "policy_question",
+          "record_state": "store_override_return_window",
+          "tools": [
+            "search_help_center",
+            "get_policy"
+          ],
+          "retrieval_reason": "States that Juniper's 14-day rule overrides Cartwheel's 30-day default.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the response correctly applies the store-specific policy override.",
+          "decided_at": "2026-09-30T16:27:06.630726+00:00"
+        },
+        {
+          "trace_id": "f69758613d9b1e7d8273b4f2e81a6f03",
+          "scenario_id": "support-0225",
+          "role": "merchant",
+          "intent": "return_deadline",
+          "record_state": "store_override_return_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Uses the Juniper override to determine the applicable return deadline.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the response correctly applies the store-specific policy override.",
+          "decided_at": "2026-09-30T16:27:06.631149+00:00"
+        },
+        {
+          "trace_id": "1755b22488351b133f4595dbbe5bd559",
+          "scenario_id": "support-0223",
+          "role": "support",
+          "intent": "policy_question",
+          "record_state": "store_override_return_window",
+          "tools": [
+            "search_help_center",
+            "get_policy"
+          ],
+          "retrieval_reason": "Correctly gives the store-specific 14-day rule as the controlling policy.",
+          "status": "accepted_by_human",
+          "decision_note": "Human confirmed that the response correctly applies the store-specific policy override.",
+          "decided_at": "2026-09-30T16:27:06.631151+00:00"
+        },
+        {
+          "trace_id": "0cddbdba1e69fc7b16dbd8c91b0494b2",
+          "scenario_id": "support-0219",
+          "role": "merchant",
+          "intent": "return_deadline",
+          "record_state": "store_override_return_window",
+          "tools": [
+            "get_order",
+            "search_help_center"
+          ],
+          "retrieval_reason": "Calculates the deadline using Juniper's 14-day window rather than the platform default.",
+          "status": "pending_human_review"
+        },
+        {
+          "trace_id": "b829e7ac1443651368ac80a58ef1c382",
+          "scenario_id": "support-0155",
+          "role": "shopper",
+          "intent": "return_deadline",
+          "record_state": "delivered_refund_eligible",
+          "tools": [
+            "get_order",
+            "search_help_center",
+            "get_policy"
+          ],
+          "retrieval_reason": "Explains that the Juniper store window takes precedence and applies it to the order.",
+          "status": "pending_human_review"
+        }
+      ],
+      "positive_examples_human_confirmed": true,
+      "boundary_human_confirmed": true,
+      "confirmed_at": "2026-09-30T16:53:45.322665+00:00",
+      "labeled_trace_count": 133,
+      "absent_trace_count": 126,
+      "sample_fraction": 0.05263157894736842,
+      "sample_fraction_denominator": 133,
+      "labeling_status": "complete_human_approved",
+      "stability_status": "stable_after_final_batch_revision"
+    },
+    {
+      "name": "response_scope_mismatch",
+      "definition": "Present when the final response omits the standardized fields required for the requested information, or includes unrelated or unrequested records, fields, or anomalies that are not needed to answer the request or resolve a genuine ambiguity.",
+      "status": "confirmed",
+      "count": 7,
+      "example_trace_ids": [
+        "96d4d0ae167d1780a0b64e9125ecdffb",
+        "08f05a7a25d7eca90e8e73881b0a3244",
+        "ea25f374d13a6e36b1a249c126e6357e",
+        "a405b9fc7abc76b0c23fde693fbb41a6",
+        "195dd7e699cac88627ef73f68b5e8991",
+        "15db67e680cfd5439b50b73f34b0c427",
+        "4b90e529ba867fe0c0bfb6a9ec15cf93"
+      ],
+      "example_quotes": [
+        "The response adds refund eligibility even though the user requested order information only.",
+        "The order reply does not follow the required standardized order-information summary.",
+        "The response includes an unrelated catalog record that is not needed to answer the request.",
+        "The response adds an unrelated product anomaly rather than staying with the requested product.",
+        "The follow-up still fails the approved response-scope contract; the human confirmed the mode is present.",
+        "The response still has a response-scope mismatch; the human confirmed the mode is present.",
+        "The response still has a response-scope mismatch; the human confirmed the mode is present."
+      ],
+      "created_from": [
+        "hw4-final-stability-support-0174",
+        "hw4-final-stability-support-0175",
+        "hw4-final-stability-support-0197",
+        "hw4-final-stability-support-0202",
+        "human-confirmed-support-0175-195dd7e6",
+        "human-confirmed-support-0202-15db67e6",
+        "human-confirmed-support-0203-4b90e529"
+      ],
+      "boundary": "Do not count evidence needed to explain a decision, information needed to resolve a genuine ambiguity, or a policy explanation explicitly required by the request. Internal policy exposure belongs to non_customer_facing_policy_or_tool_details; a missing decision reason belongs to missing_decision_rationale; repeated calls belong to redundant_tool_calls.",
+      "likely_evaluator_type": "llm_judge",
+      "requirement_source": [
+        "RESP-9"
+      ],
+      "close_negative_trace_ids": [
+        "f1c8c127e0797c831fa869ffe2233359",
+        "d01571cdb19c81bf102b86d84b99ff29",
+        "41d142759afc184b5c77e2322f4b0a27"
+      ],
+      "close_negative_status": "requirement_met_three_human_confirmed",
+      "human_decision": "keep; the human confirmed seven positive examples and rejected the first three close-negative candidates because the mode was present in all three",
+      "close_negative_candidates": [
+        {
+          "trace_id": "f1c8c127e0797c831fa869ffe2233359",
+          "scenario_id": "support-0082",
+          "retrieval_reason": "The response returns only the requested product name, product ID, and price for a unique product match. A separate missing-follow-up concern does not make this response_scope_mismatch present.",
+          "status": "confirmed_by_human",
+          "confirmed_at": "2026-10-04T08:30:07.744380+00:00"
+        },
+        {
+          "trace_id": "d01571cdb19c81bf102b86d84b99ff29",
+          "scenario_id": "support-0083",
+          "retrieval_reason": "The response returns only the requested product name, product ID, and price for a unique product match, without unrelated records or fields.",
+          "status": "confirmed_by_human",
+          "confirmed_at": "2026-10-04T08:30:07.744380+00:00"
+        },
+        {
+          "trace_id": "41d142759afc184b5c77e2322f4b0a27",
+          "scenario_id": "support-0095",
+          "retrieval_reason": "The response directly supplies the requested unique product and its requested identifier and price, without unrelated catalog information.",
+          "status": "confirmed_by_human",
+          "confirmed_at": "2026-10-04T08:30:07.744380+00:00"
+        }
+      ],
+      "confirmation": {
+        "mode_approved_by_human": true,
+        "approved_at": "2026-10-03T17:06:58.774036+00:00",
+        "close_negatives_approved_by_human": true,
+        "positive_examples_approved_by_human": true,
+        "positive_examples_confirmed_count": 7,
+        "corrected_at": "2026-10-04T08:24:47.336314+00:00",
+        "close_negatives_confirmed_at": "2026-10-04T08:30:07.744380+00:00",
+        "trace_labels_approved_by_human": true,
+        "trace_labels_confirmed_at": "2026-10-04T08:34:00.890975+00:00"
+      },
+      "labeled_trace_count": 133,
+      "absent_trace_count": 126,
+      "labeling_status": "complete_human_approved",
+      "labeling_completed_at": "2026-10-04T08:34:00.890975+00:00",
+      "sample_fraction": 0.05263157894736842,
+      "sample_fraction_denominator": 133,
+      "stability_status": "stable_after_final_batch_revision"
+    }
+  ],
+  "human_signoff": {
+    "status": "confirmed",
+    "recorded_at": "2026-09-30T14:23:11.848445+00:00",
+    "kept": [
+      "non_customer_facing_policy_or_tool_details",
+      "missing_decision_rationale",
+      "dispute_workflow_mishandled",
+      "redundant_tool_calls",
+      "store_policy_override_ignored",
+      "response_scope_mismatch"
+    ],
+    "merged": {
+      "missing_public_policy_link + internal_tool_details_exposed": "non_customer_facing_policy_or_tool_details",
+      "refund_tool_used_for_dispute + dispute_window_not_enforced": "dispute_workflow_mishandled"
+    },
+    "removed": [
+      "ambiguous_product_not_disambiguated"
+    ],
+    "clarified": {
+      "wrong_tool_for_intent": "refund_tool_used_for_dispute"
+    },
+    "note": "The human confirmed six modes, every one of the 798 trace-mode decisions, positive examples, and at least three close negatives per mode. The final 15 introduced one new mode, which was incorporated through RESP-9 and a follow-up labeling pass.",
+    "close_negative_review": {
+      "status": "complete",
+      "completed_at": "2026-09-30T16:46:41.263285+00:00",
+      "minimum_per_mode": 3
+    },
+    "confirmed_at": "2026-10-04T08:57:39.268012+00:00",
+    "confirmed_mode_count": 6,
+    "pending_mode_definition_approved": true,
+    "pending_mode_close_negatives_approved": true,
+    "pending_mode_labels_approved": true,
+    "stability_gap": {
+      "detected_at": "2026-10-04T08:45:39.586588+00:00",
+      "missing_original_mode_decisions": 85,
+      "traces_with_missing_original_mode_decisions": 17,
+      "response_scope_labels_requiring_recheck": 18,
+      "reason": "The final stability audit found missing decisions for the original five modes and bulk-approved response-scope absences that conflict with RESP-9 evidence.",
+      "original_mode_proposals_approved": true,
+      "original_mode_proposals_approved_at": "2026-10-04T08:48:55.598738+00:00",
+      "promoted_original_mode_decisions": 85,
+      "remaining_missing_trace_mode_decisions": 0,
+      "response_scope_conflicts_reviewed": 18,
+      "response_scope_conflicts_confirmed_absent": 18,
+      "resolved": true,
+      "resolved_at": "2026-10-04T08:57:39.268012+00:00"
+    },
+    "final_stability_batch_size": 15,
+    "new_consequential_modes_in_final_batch": 1
+  },
+  "reconciliation": {
+    "status": "complete",
+    "agentdebug_compared": true,
+    "compared_at": "2026-09-30T16:53:45.322665+00:00",
+    "source": {
+      "title": "Where LLM Agents Fail and How They can Learn From Failures",
+      "taxonomy": "AgentErrorTaxonomy",
+      "url": "https://arxiv.org/abs/2509.25370",
+      "version": "v1"
+    },
+    "decisions": [
+      {
+        "agentdebug_category": "Planning / Inefficient Planning",
+        "cartwheel_mode": "redundant_tool_calls",
+        "decision": "accepted_concept_kept_domain_name",
+        "reason": "Both identify unnecessary steps, but the Cartwheel name states the exact observable tool behavior and is easier to label as a binary mode."
+      },
+      {
+        "agentdebug_category": "Action / Planning-Action Disconnect and Planning / Constraint Ignorance",
+        "cartwheel_mode": "dispute_workflow_mishandled",
+        "decision": "revised_to_domain_specific_mode",
+        "reason": "The generic categories explain the root causes, while the confirmed Cartwheel mode captures the observed refund-routing and 60-day dispute constraints."
+      },
+      {
+        "agentdebug_category": "Planning / Constraint Ignorance",
+        "cartwheel_mode": "store_policy_override_ignored",
+        "decision": "accepted_mapping_kept_domain_name",
+        "reason": "Ignoring policy precedence is a Cartwheel-specific constraint violation, so the domain name is more reproducible for reviewers."
+      },
+      {
+        "agentdebug_category": "Action / Format Error",
+        "cartwheel_mode": "non_customer_facing_policy_or_tool_details",
+        "decision": "rejected_as_rename",
+        "reason": "AgentDebug's format error concerns syntactically invalid actions. The Cartwheel mode concerns exposing internal information in an otherwise valid user response."
+      },
+      {
+        "agentdebug_category": "Reflection / Causal Misattribution",
+        "cartwheel_mode": "missing_decision_rationale",
+        "decision": "rejected_as_rename",
+        "reason": "A missing explanation is not the same as supplying an incorrect causal explanation."
+      }
+    ],
+    "possible_omission": {
+      "agentdebug_category": "Reflection / Outcome Misinterpretation",
+      "decision": "not_added",
+      "reason": "The reviewed annotations contain isolated outcome discrepancies, but the human-approved groups did not establish a separate mode with three confirmed positives, a distinct product fix, and close negatives. The homework requires modes to originate in the reviewed Cartwheel evidence rather than being imported from a published taxonomy."
+    }
+  }
+}
